@@ -105,12 +105,50 @@ static void set_error(gevr_xr *xr, const char *fmt, ...)
     va_end(ap);
 }
 
+/*
+ * Names for the results that can come back before there is an instance.
+ *
+ * xrResultToString is the proper way to do this and needs an XrInstance --
+ * which is useless precisely when xrCreateInstance is what failed. That left
+ * the most important error in the whole layer printing "XrResult(-4)", a
+ * number that tells the reader nothing and cost a round trip to decode.
+ *
+ * The values come from the enum constants rather than being written out, so
+ * the compiler supplies them and none of them can be wrong here.
+ */
+static const struct { XrResult r; const char *name; } k_xr_result_names[] = {
+    { XR_ERROR_VALIDATION_FAILURE,        "XR_ERROR_VALIDATION_FAILURE" },
+    { XR_ERROR_RUNTIME_FAILURE,           "XR_ERROR_RUNTIME_FAILURE" },
+    { XR_ERROR_OUT_OF_MEMORY,             "XR_ERROR_OUT_OF_MEMORY" },
+    { XR_ERROR_API_VERSION_UNSUPPORTED,   "XR_ERROR_API_VERSION_UNSUPPORTED" },
+    { XR_ERROR_INITIALIZATION_FAILED,     "XR_ERROR_INITIALIZATION_FAILED" },
+    { XR_ERROR_FUNCTION_UNSUPPORTED,      "XR_ERROR_FUNCTION_UNSUPPORTED" },
+    { XR_ERROR_FEATURE_UNSUPPORTED,       "XR_ERROR_FEATURE_UNSUPPORTED" },
+    { XR_ERROR_EXTENSION_NOT_PRESENT,     "XR_ERROR_EXTENSION_NOT_PRESENT" },
+    { XR_ERROR_LIMIT_REACHED,             "XR_ERROR_LIMIT_REACHED" },
+    { XR_ERROR_SIZE_INSUFFICIENT,         "XR_ERROR_SIZE_INSUFFICIENT" },
+    { XR_ERROR_HANDLE_INVALID,            "XR_ERROR_HANDLE_INVALID" },
+    { XR_ERROR_INSTANCE_LOST,             "XR_ERROR_INSTANCE_LOST" },
+    { XR_ERROR_SYSTEM_INVALID,            "XR_ERROR_SYSTEM_INVALID" },
+    { XR_ERROR_PATH_INVALID,              "XR_ERROR_PATH_INVALID" },
+    { XR_ERROR_FORM_FACTOR_UNSUPPORTED,   "XR_ERROR_FORM_FACTOR_UNSUPPORTED" },
+    { XR_ERROR_FORM_FACTOR_UNAVAILABLE,   "XR_ERROR_FORM_FACTOR_UNAVAILABLE" },
+    { XR_ERROR_GRAPHICS_DEVICE_INVALID,   "XR_ERROR_GRAPHICS_DEVICE_INVALID" },
+};
+
 static const char *xr_result_str(gevr_xr *xr, XrResult r)
 {
     static char buf[XR_MAX_RESULT_STRING_SIZE];
+    size_t i;
+
     if (xr && xr->instance != XR_NULL_HANDLE &&
         XR_SUCCEEDED(xrResultToString(xr->instance, r, buf))) {
         return buf;
+    }
+    for (i = 0; i < sizeof(k_xr_result_names) / sizeof(k_xr_result_names[0]); i++) {
+        if (k_xr_result_names[i].r == r) {
+            return k_xr_result_names[i].name;
+        }
     }
     snprintf(buf, sizeof(buf), "XrResult(%d)", (int)r);
     return buf;
@@ -223,7 +261,21 @@ static int create_instance(gevr_xr *xr, const gevr_xr_desc *desc)
 
     memset(&ci, 0, sizeof(ci));
     ci.type = XR_TYPE_INSTANCE_CREATE_INFO;
-    ci.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    /*
+     * Ask for 1.0, not XR_CURRENT_API_VERSION.
+     *
+     * That macro is whatever the SDK headers were at build time, and a 1.1 SDK
+     * makes it 1.1 -- which a runtime advertising only 1.0 rejects outright
+     * with XR_ERROR_API_VERSION_UNSUPPORTED, before any of the useful
+     * diagnostics run. That is exactly what SteamVR did here when the layer
+     * was built against MSYS2's current openxr-sdk, while a 1.0.20 SDK on
+     * Linux had made the same line mean 1.0 and never failed.
+     *
+     * Compatibility is decided by major.minor, so requesting 1.0 is accepted
+     * by a 1.1 runtime too. This layer uses no 1.1 feature, so pinning here
+     * costs nothing and works against every runtime either way.
+     */
+    ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
     snprintf(ci.applicationInfo.applicationName,
              sizeof(ci.applicationInfo.applicationName), "%s",
              (desc && desc->app_name) ? desc->app_name : "GoldenEye VR");
