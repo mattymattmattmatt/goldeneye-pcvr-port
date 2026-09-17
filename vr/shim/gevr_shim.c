@@ -260,6 +260,47 @@ void gevr_shim_end_eye_target(int eye)
     gevr_xr_release_eye(g_vr.xr, eye);
 }
 
+/* Supplied by the host; see port/src/vrhook.c. Declared rather than included
+ * so the shim keeps no dependency on the host's headers. */
+extern void gevr_shim_window_size(int *w, int *h);
+
+void gevr_shim_blit_mirror(void)
+{
+    const gevr_eye_target *t;
+    unsigned fbo;
+
+    if (!g_vr.active || !g_vr.rendering) {
+        return;
+    }
+    t = &g_vr.eye_target[GEVR_EYE_LEFT];
+    if (!t->gl_texture || t->width <= 0 || t->height <= 0) {
+        return;
+    }
+
+    /* Bind the window (framebuffer 0) and blit the left eye into it. The eye's
+     * swapchain image has already been released by this point, but the texture
+     * is still readable -- the runtime only reuses it a frame later, and the
+     * blit is a read. */
+    fbo = gevr_gl_framebuffer_for(t->gl_texture, 0);
+    if (!fbo) {
+        return;
+    }
+    /* Destination size comes from the host's own window rather than a new
+     * config key: the window is whatever the player sized it to, and a
+     * VR-specific mirror resolution would just be a second thing to keep in
+     * sync with it. */
+    {
+        int dw = 0, dh = 0;
+
+        gevr_shim_window_size(&dw, &dh);
+        if (dw <= 0 || dh <= 0) {
+            dw = t->width;
+            dh = t->height;
+        }
+        gevr_gl_blit_mirror(fbo, t->width, t->height, dw, dh);
+    }
+}
+
 void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx)
 {
     int e;

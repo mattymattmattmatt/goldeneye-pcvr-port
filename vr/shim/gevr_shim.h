@@ -91,6 +91,10 @@ void gevr_shim_end_eye_target(int eye);
 void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx);
 int  gevr_shim_alternate_eyes(void);
 
+/* Blits one eye onto the desktop window, so the monitor shows what the player
+ * sees rather than the empty framebuffer the eye passes left behind. */
+void gevr_shim_blit_mirror(void);
+
 /* 0 = left, 1 = right. Between begin and end the swapchain image for that eye
  * is bound and the viewport is set. */
 void gevr_shim_begin_eye(int eye);
@@ -142,6 +146,7 @@ float gevr_shim_crouch_offset(void);
 #define gevr_shim_end_eye_target(e)    ((void)0)
 #define gevr_shim_publish_eyes(c)      ((void)0)
 #define gevr_shim_alternate_eyes()     (0)
+#define gevr_shim_blit_mirror()        ((void)0)
 #define gevr_shim_begin_eye(e)      ((void)0)
 #define gevr_shim_end_eye(e)        ((void)0)
 #define gevr_shim_current_eye()     (0)

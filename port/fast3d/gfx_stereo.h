@@ -60,6 +60,10 @@ struct GfxStereoHooks {
 /* NULL restores the unmodified single-pass behaviour. */
 void gfx_set_stereo_hooks(const struct GfxStereoHooks *hooks);
 
+/* Whether anything currently owns the seam. Lets a diagnostic stand aside for
+ * a real headset instead of silently replacing it. */
+int gfx_stereo_hooks_installed(void);
+
 /* The eye currently being drawn, or 0 when no hooks are installed. Exposed so
  * the game-side VR hooks can agree with the renderer about which eye is in
  * flight without a second source of truth. */

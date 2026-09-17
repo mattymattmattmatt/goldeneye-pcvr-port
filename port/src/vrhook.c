@@ -80,6 +80,16 @@ void vrHookFrameEnd(void)
      * frame. Done here rather than in the hook itself because the hook runs
      * inside the renderer's list walk, where calling into OpenXR would put
      * runtime calls in the middle of a draw. */
+    /*
+     * Put an eye on the desktop window before the frame closes.
+     *
+     * Without this the window shows nothing useful once VR is live: the eye
+     * passes render into the swapchain framebuffers, and gfx_run's tail then
+     * presents framebuffer 0, which nothing has drawn into. Someone watching
+     * the monitor would reasonably conclude the game had hung.
+     */
+    gevr_shim_blit_mirror();
+
     gevr_shim_publish_eyes(&g_stereo);
     gevr_shim_frame_end();
     g_stereo.frame_parity++;

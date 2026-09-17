@@ -80,6 +80,15 @@ static void portPrintHelp(const char *argv0)
 
 static void portAtExit(void)
 {
+#ifdef GE_VR
+    /* Hand the headset back. Without this the OpenXR session and its
+     * swapchains are left to the runtime to clean up, which SteamVR in
+     * particular does not always do gracefully. */
+    {
+        extern void vrHookShutdown(void);
+        vrHookShutdown();
+    }
+#endif
     /* Clean-exit only (exit(0) from videoPumpEvents). Crash/fatal paths call
      * abort(), which does not run atexit handlers. */
     videoSaveWindowState();

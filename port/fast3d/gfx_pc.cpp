@@ -1257,6 +1257,10 @@ extern "C" void gfx_set_stereo_hooks(const struct GfxStereoHooks* hooks) {
     gfx_stereo_eye = 0;
 }
 
+extern "C" int gfx_stereo_hooks_installed(void) {
+    return gfx_stereo != nullptr;
+}
+
 extern "C" int gfx_stereo_current_eye(void) {
     return gfx_stereo ? gfx_stereo_eye : 0;
 }

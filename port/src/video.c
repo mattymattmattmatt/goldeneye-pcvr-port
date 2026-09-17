@@ -381,6 +381,21 @@ static double fpsWindowStart = 0.0;
 static int fpsNumFrames = 0;
 static float vidAvgFPS = 0.f;
 
+#ifdef GE_VR
+/*
+ * The VR shim asks the host for the mirror's destination size rather than
+ * carrying its own copy of it. Defined here because this file already has the
+ * renderer's headers; putting it in vrhook.c would drag gfx_api.h -- and with
+ * it the Gfx type -- into a translation unit that also sees the game's
+ * headers, where the two definitions collide.
+ */
+void gevr_shim_window_size(int *w, int *h)
+{
+    if (w) { *w = (int)gfx_current_window_dimensions.width; }
+    if (h) { *h = (int)gfx_current_window_dimensions.height; }
+}
+#endif
+
 int videoInit(void)
 {
     wmAPI = &gfx_sdl;
@@ -459,10 +474,23 @@ int videoInit(void)
         extern void stereoProbeInit(void);
         extern void vrHookInit(void);
 
-        /* VR first: the probe is a diagnostic and must not displace a real
-         * headset if one is present. stereoProbeInit only installs hooks when
-         * GE_STEREO_PROBE is set, so in the normal case neither fires. */
+        /*
+         * The context has just been released above, and xrCreateSession needs
+         * one: gevr_xr.c builds its graphics binding from glXGetCurrentContext
+         * / wglGetCurrentContext, which return NULL with nothing current. So
+         * bind it again for the duration of VR start-up and release it after,
+         * leaving the thread exactly as the code above expects.
+         *
+         * Binding the same context the scheduler thread will re-bind each
+         * frame is also what makes the session valid there: the session is
+         * tied to the context handle it was created with.
+         */
+        gfx_sdl_make_context_current();
         vrHookInit();
+        gfx_sdl_release_context();
+
+        /* Diagnostic, inert unless GE_STEREO_PROBE is set, and skipped
+         * outright when VR is live so it cannot displace a real headset. */
         stereoProbeInit();
     }
 

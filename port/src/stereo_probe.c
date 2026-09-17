@@ -151,6 +151,14 @@ void stereoProbeInit(void)
     if (!v || !*v || *v == '0') {
         return;
     }
+    if (gfx_stereo_hooks_installed()) {
+        /* VR came up first and owns the seam. Two sets of hooks cannot both
+         * be installed, and a diagnostic must never win that race. */
+        sysLogPrintf(LOG_INFO,
+                     "GE_STEREO_PROBE ignored: VR is live and owns the "
+                     "per-eye seam.");
+        return;
+    }
     g_enabled = atoi(v);
     if (g_enabled < 1) { g_enabled = 1; }
     gfx_set_stereo_hooks(&g_probe_hooks);
