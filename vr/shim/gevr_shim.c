@@ -361,6 +361,26 @@ int gevr_shim_get_pads(OSContPad *out, int max)
     }
     ensure_frame_open();
 
+    /*
+     * No player yet, nothing to drive.
+     *
+     * joy.c polls the controllers from the moment the game starts, which is
+     * well before a level exists and g_CurrentPlayer is set. The control-type
+     * accessors below dereference it without checking -- options.c's
+     * cur_player_get_control_type is a bare `return g_CurrentPlayer->...` --
+     * so reaching them early is an access violation deep in the player struct,
+     * which is exactly how this crashed on the first real run: a null read at
+     * offset 0x36b0, a few frames after startup.
+     *
+     * read_game_state further down does guard, which is what made the bug easy
+     * to miss: the guard was there, just after the two calls that needed it.
+     * Returning no pads leaves joy.c holding the real controller state, which
+     * is the right answer before the player exists.
+     */
+    if (!g_CurrentPlayer) {
+        return 0;
+    }
+
     /* The entire mapping assumes the engine is routing two pads the Goodhead
      * way. Forcing it every frame is cheap and stops a stray options-menu
      * change from silently breaking the controls mid-level. */
