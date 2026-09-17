@@ -161,6 +161,9 @@
 #define FLOAT_TEN_B 10.00f
 
 #include "bondview_internal.h"
+#ifdef GE_VR
+#include "gevr_shim.h"
+#endif
 
 #define a8s "%8s"
 #define aX4_0f "x %4.0f"
@@ -6847,6 +6850,35 @@ void MoveBond(s8 stick_x, s8 stick_y, u16 buttons, u16 oldbuttons)
 
         g_CurrentPlayer->vv_theta = stack_padding_9;
     }
+
+#ifdef GE_VR
+    /* Absolute head aim, replacing whatever the stick just integrated.
+     *
+     * The stick writes speedtheta/speedverta, which the lines above integrate
+     * into the angles -- rate control. A headset is positional: the view has
+     * to BE where the head is, not chase it, or the world lags behind every
+     * turn of the neck, which is the thing that makes people ill.
+     *
+     * This has to sit here, before bondviewApplyVertaTheta(), because that is
+     * what derives vv_costheta/sintheta/cosverta/sinverta from the angles, and
+     * the view matrix, gun direction, hitscan and radar all read the derived
+     * values rather than the angles. Writing here means the whole engine
+     * agrees with the headset within this frame; writing after would leave all
+     * of them one frame stale, which is the lag back again.
+     *
+     * The shim declines during menus, cutscenes and control locks, so a
+     * scripted camera keeps the view. */
+    {
+        f32 vr_theta;
+        f32 vr_verta;
+
+        if (gevr_shim_head_aim(&vr_theta, &vr_verta))
+        {
+            g_CurrentPlayer->vv_theta = vr_theta;
+            g_CurrentPlayer->vv_verta = vr_verta;
+        }
+    }
+#endif
 
     bondviewApplyVertaTheta();
 

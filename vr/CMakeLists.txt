@@ -122,6 +122,13 @@ if(GEVR_BUILD_TESTS)
     add_executable(gevr_headaim_tests tests/test_headaim.c)
     target_link_libraries(gevr_headaim_tests PRIVATE gevr_core)
     add_test(NAME gevr_headaim COMMAND gevr_headaim_tests)
+
+    # The projection maths only; no renderer and no runtime, so the stereo
+    # policy can be checked without a headset or a ROM.
+    add_executable(gevr_stereo_tests tests/test_stereo.c shim/gevr_stereo.c)
+    target_include_directories(gevr_stereo_tests PRIVATE shim ${CMAKE_CURRENT_SOURCE_DIR}/../port/fast3d)
+    target_link_libraries(gevr_stereo_tests PRIVATE gevr_core)
+    add_test(NAME gevr_stereo COMMAND gevr_stereo_tests)
 endif()
 
 # The shim is compiled as part of the game, not here: it needs the engine's

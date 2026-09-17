@@ -131,3 +131,39 @@ original patch.
 
 `vr/` itself needed no changes: it configures, builds and passes its 2 test
 suites inside this tree exactly as it did standalone.
+
+## The fr.c projection hook is no longer needed
+
+The original patch hooked `guPerspectiveF` in `fr.c` to substitute the eye's
+frustum while the game built its display list. With the renderer's seam in
+place that hook is not just redundant, it would be wrong: it would bake one
+eye's frustum into a list the renderer then walks twice, and the per-projection
+hook would apply an eye transform on top of it. Double-applied.
+
+Substituting at the renderer is strictly better anyway. It runs per eye, which
+a hook during list construction cannot -- the list is built once -- and it
+catches every projection the list loads rather than only the one call site.
+
+So the game-side patch is down to two files: `joy.c` for the pads and
+`bondview2.c` for head aim. `fr.c` is untouched.
+
+## Known gap: cull planes are still the game's
+
+`fr.c`'s D222 note records that `currentPlayerSetPerspective` feeds
+`c_perspfovy`, from which `currentPlayerSetCameraScale()` derives the
+frustum-cull plane normals and the fog/LOD distance scale. Those are computed
+from the *nominal* projection the game built, not from the eye frusta the
+renderer substitutes.
+
+For stereo that is a real mismatch. Each eye's frustum is asymmetric and turned
+slightly outward, so geometry just outside the nominal frustum can be inside an
+eye's -- and will have been culled before the renderer ever sees it. The
+symptom would be objects popping in at the outer edge of each eye, worse at
+wider IPD, and it would look like a renderer fault rather than a culling one.
+
+The fix is to widen the FOV fed to `currentPlayerSetPerspective` so the cull
+volume covers the union of both eyes. The host already has that plumbing, since
+`portScaleFovY` exists for exactly this reason at exactly that call site. What
+it needs is the widening factor, which is only known once the runtime reports
+its FOVs — so this wants doing with a headset attached rather than guessed at
+here.
