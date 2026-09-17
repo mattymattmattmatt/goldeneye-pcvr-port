@@ -16,6 +16,44 @@
 
 #include <math.h>
 
+/*
+ * The float maths this layer uses, declared explicitly.
+ *
+ * <math.h> does not always supply them here. Built standalone it does, but
+ * inside the host port the repository's own include/math.h shadows the
+ * toolchain's, and its declarations sit inside an `#if 0` -- so the header
+ * yields the constants and none of the functions. The game's own sources live
+ * with that (sky.c calls floorf implicitly), because -Wno-error=implicit-
+ * function-declaration lets it through and GCC recognises the names as
+ * builtins anyway.
+ *
+ * That is not something to rely on. An implicit declaration returns int, and
+ * for a function returning float the only reason it works is the compiler
+ * quietly substituting the builtin. On MinGW the same code produced a wall of
+ * -Wbuiltin-declaration-mismatch and, for offsetof, a hard error.
+ *
+ * These prototypes are exactly the C standard's, so they are harmless where
+ * math.h already declared them and sufficient where it did not.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+float asinf(float);
+float atanf(float);
+float atan2f(float, float);
+float cosf(float);
+float fabsf(float);
+float fmodf(float, float);
+float powf(float, float);
+float sinf(float);
+float sqrtf(float);
+float tanf(float);
+
+#ifdef __cplusplus
+}
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

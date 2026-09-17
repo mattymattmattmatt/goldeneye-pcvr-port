@@ -10,6 +10,39 @@
 #   ctest --test-dir build/vr --output-on-failure
 # ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.16)
+
+# The VR layer is deliberately independent of the game's headers, and that has
+# to hold at the include-path level too.
+#
+# When vr/ is added as a subdirectory of the host port, it inherits the
+# parent's directory-level include_directories(), the first of which is
+# port/shim -- the game's replacements for stddef.h, stdarg.h, stdlib.h and
+# string.h. The VR sources then get the game's <stddef.h> instead of the
+# toolchain's, and offsetof, fmodf and friends quietly stop being declared.
+#
+# On glibc this goes unnoticed because the real declarations arrive anyway
+# through some other transitive include. On MinGW they do not, and the build
+# fails with "expected expression before 'gevr_config'" -- a message that
+# points at the macro rather than at the shadowed header behind it.
+#
+# Removing just port/shim is not enough -- the repository's own include/ also
+# carries a string.h, and PR/ultratypes.h there wants a size_t that only the
+# shim's stddef.h was providing. Pulling one out exposes the next. The list has
+# to go entirely.
+#
+# Which then takes versioninfo.h with it, since the parent injects
+# `-include versioninfo.h` globally and its directory was in that list. The VR
+# layer has no use for the game's build stamp, so the option goes too rather
+# than the include path coming back. Everything else the parent sets --
+# -fno-pie among it, which has to match the host's link -- is kept.
+set_property(DIRECTORY PROPERTY INCLUDE_DIRECTORIES "")
+
+get_property(_gevr_opt DIRECTORY PROPERTY COMPILE_OPTIONS)
+list(FILTER _gevr_opt EXCLUDE REGEX "versioninfo")
+list(FILTER _gevr_opt EXCLUDE REGEX "^-include$")
+set_property(DIRECTORY PROPERTY COMPILE_OPTIONS "${_gevr_opt}")
+unset(_gevr_opt)
+
 project(gevr C)
 
 set(CMAKE_C_STANDARD 99)

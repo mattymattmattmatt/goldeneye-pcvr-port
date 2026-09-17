@@ -12,6 +12,12 @@
 #ifdef _WIN32
 #  define XR_USE_PLATFORM_WIN32
 #  include <windows.h>
+/* openxr_platform.h declares the Windows holographic-space entry points in
+ * terms of IUnknown, which is COM's, not Windows'. Without <unknwn.h> the
+ * header fails with four "unknown type name 'IUnknown'" errors that look like
+ * a broken SDK and are not -- the OpenXR spec requires this include on
+ * Windows. It is unused on any other platform. */
+#  include <unknwn.h>
 #else
 #  define XR_USE_PLATFORM_XLIB
 #  include <X11/Xlib.h>
