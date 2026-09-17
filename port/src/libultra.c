@@ -1391,6 +1391,10 @@ void osSpTaskStartGo(OSTask *t)
         videoStartFrame();
         gfx_run((Gfx *)t->t.data_ptr);
         videoEndFrame();
+        {
+            extern void vrHookFrameEnd(void);
+            vrHookFrameEnd();
+        }
         g_lastFrameUs = sysGetMicroseconds();
         if (++g_framesRendered <= 5 || (g_framesRendered % 300) == 0)
             sysLogPrintf(LOG_NOTE, "frame %d rendered in %llu us",

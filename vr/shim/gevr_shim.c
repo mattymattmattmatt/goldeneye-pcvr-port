@@ -1,6 +1,8 @@
 #include "gevr_shim.h"
 
 #include "gevr_headaim.h"
+#include "gevr_stereo.h"
+#include "gevr_gl.h"
 
 #ifdef GE_VR
 
@@ -54,6 +56,7 @@ static struct {
 
     int              active;
     int              rendering;
+    int              frame_open;   /* xrWaitFrame done for this game frame */
     int              current_eye;
 } g_vr;
 
@@ -132,13 +135,27 @@ static void read_game_state(gevr_game_state *game)
     game->controls_locked = lvlGetControlsLockedFlag() ? 1 : 0;
 }
 
-void gevr_shim_frame_begin(void)
+/*
+ * Opening the frame is idempotent and can be triggered from either end.
+ *
+ * The poses have to be fresh when the GAME reads them, not when the renderer
+ * does: joyPoll runs per frame before the tick, head aim writes vv_theta
+ * during MoveBond, and the display list is built from that. If the frame were
+ * only opened at render time, every pose would be one frame behind the input
+ * that used it -- which is precisely the lag head aim exists to remove.
+ *
+ * Rather than guess at the host's thread and call order, whichever entry point
+ * is reached first in a frame opens it: the pad read, the head-aim query, or
+ * the renderer. gevr_shim_frame_end closes it.
+ */
+static void ensure_frame_open(void)
 {
     gevr_frame_status st;
 
-    if (!g_vr.active) {
+    if (!g_vr.active || g_vr.frame_open) {
         return;
     }
+    g_vr.frame_open = 1;
 
     st = gevr_xr_poll(g_vr.xr);
     if (st == GEVR_FRAME_EXIT) {
@@ -150,13 +167,20 @@ void gevr_shim_frame_begin(void)
     g_vr.rendering = (st == GEVR_FRAME_RENDER);
 }
 
+void gevr_shim_frame_begin(void)
+{
+    ensure_frame_open();
+}
+
 void gevr_shim_frame_end(void)
 {
-    if (!g_vr.active) {
+    if (!g_vr.active || !g_vr.frame_open) {
+        g_vr.frame_open = 0;
         return;
     }
     gevr_xr_end_frame(g_vr.xr);
     g_vr.rendering = 0;
+    g_vr.frame_open = 0;
 }
 
 int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg)
@@ -171,6 +195,7 @@ int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg)
     if (g_vr.cfg.aim_mode != GEVR_AIM_HEAD) {
         return 0;
     }
+    ensure_frame_open();
     if (!g_vr.input.head_valid) {
         /* Tracking lost. Leaving the angles alone freezes the view where it
          * was, which is the least alarming thing that can happen; writing a
@@ -195,6 +220,94 @@ int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg)
                                out_theta_deg, out_verta_deg);
 }
 
+int gevr_shim_alternate_eyes(void)
+{
+    return g_vr.cfg.alternate_eyes ? 1 : 0;
+}
+
+int gevr_shim_begin_eye_target(int eye)
+{
+    gevr_eye_target t;
+    unsigned fbo;
+
+    if (!g_vr.active || !g_vr.rendering || eye < 0 || eye >= GEVR_EYE_COUNT) {
+        return 0;
+    }
+    if (gevr_xr_acquire_eye(g_vr.xr, eye, &t) != 0) {
+        return 0;
+    }
+
+    fbo = gevr_gl_framebuffer_for(t.gl_texture, t.gl_depth);
+    if (!fbo) {
+        /* Acquired but unusable: release it again rather than leaving the
+         * swapchain image checked out, which would wedge the runtime on the
+         * next frame. */
+        gevr_xr_release_eye(g_vr.xr, eye);
+        return 0;
+    }
+
+    gevr_gl_bind_framebuffer(fbo, t.width, t.height);
+    g_vr.eye_target[eye] = t;
+    g_vr.current_eye = eye;
+    return 1;
+}
+
+void gevr_shim_end_eye_target(int eye)
+{
+    if (!g_vr.active || eye < 0 || eye >= GEVR_EYE_COUNT) {
+        return;
+    }
+    gevr_xr_release_eye(g_vr.xr, eye);
+}
+
+void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx)
+{
+    int e;
+
+    if (!ctx) {
+        return;
+    }
+    if (!g_vr.active) {
+        for (e = 0; e < GEVR_EYE_COUNT; e++) {
+            ctx->eye[e].valid = 0;
+        }
+        return;
+    }
+
+    for (e = 0; e < GEVR_EYE_COUNT; e++) {
+        const gevr_eye_target *t = &g_vr.eye_target[e];
+        gevr_vec3 d;
+
+        ctx->eye[e].fov[0] = t->fov[0];
+        ctx->eye[e].fov[1] = t->fov[1];
+        ctx->eye[e].fov[2] = t->fov[2];
+        ctx->eye[e].fov[3] = t->fov[3];
+
+        /*
+         * Offset of the eye from the head, in game units.
+         *
+         * Only the translation is taken. The head's rotation is already in the
+         * engine's view matrix, because head aim wrote it into vv_theta and
+         * vv_verta; using the eye's full pose here would turn the world twice.
+         *
+         * ipd_scale below 1 pulls the eyes together, which flattens the stereo
+         * effect. Some players want that at N64 scale, where true separation
+         * can make the world read as a diorama.
+         */
+        d.x = t->pose.position.x - g_vr.input.head.position.x;
+        d.y = t->pose.position.y - g_vr.input.head.position.y;
+        d.z = t->pose.position.z - g_vr.input.head.position.z;
+
+        ctx->eye[e].offset.x = d.x * g_vr.cfg.world_scale * g_vr.cfg.ipd_scale;
+        ctx->eye[e].offset.y = d.y * g_vr.cfg.world_scale * g_vr.cfg.ipd_scale;
+        ctx->eye[e].offset.z = d.z * g_vr.cfg.world_scale * g_vr.cfg.ipd_scale;
+
+        /* A zero-width frustum means the runtime has not reported this eye
+         * yet; the hook leaves the game's own projection alone in that case. */
+        ctx->eye[e].valid = (t->fov[1] > t->fov[0]) && (t->fov[2] > t->fov[3]);
+    }
+}
+
 int gevr_shim_get_pads(OSContPad *out, int max)
 {
     gevr_game_state game;
@@ -205,6 +318,7 @@ int gevr_shim_get_pads(OSContPad *out, int max)
     if (!g_vr.active || !out || max <= 0) {
         return 0;
     }
+    ensure_frame_open();
 
     /* The entire mapping assumes the engine is routing two pads the Goodhead
      * way. Forcing it every frame is cheap and stops a stray options-menu

@@ -457,6 +457,12 @@ int videoInit(void)
      * port/src/stereo_probe.c. */
     {
         extern void stereoProbeInit(void);
+        extern void vrHookInit(void);
+
+        /* VR first: the probe is a diagnostic and must not displace a real
+         * headset if one is present. stereoProbeInit only installs hooks when
+         * GE_STEREO_PROBE is set, so in the normal case neither fires. */
+        vrHookInit();
         stereoProbeInit();
     }
 

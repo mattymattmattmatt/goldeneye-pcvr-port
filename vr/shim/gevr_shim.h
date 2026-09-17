@@ -73,6 +73,24 @@ int gevr_shim_get_pads(OSContPad *out, int max);
  */
 int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg);
 
+/*
+ * Render-target and per-eye state for the fast3d stereo seam.
+ *
+ * begin_eye_target acquires that eye's swapchain image and binds it, returning
+ * 0 if the runtime declined the frame -- the renderer then skips the pass
+ * rather than drawing into nothing.
+ *
+ * publish_eyes refreshes the FOVs and eye offsets the projection hook reads.
+ * It is called once per frame from the host, not from inside the hook: the
+ * hook runs during the renderer's list walk, and calling into OpenXR in the
+ * middle of a draw is asking for trouble.
+ */
+struct gevr_stereo_ctx;
+int  gevr_shim_begin_eye_target(int eye);
+void gevr_shim_end_eye_target(int eye);
+void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx);
+int  gevr_shim_alternate_eyes(void);
+
 /* 0 = left, 1 = right. Between begin and end the swapchain image for that eye
  * is bound and the viewport is set. */
 void gevr_shim_begin_eye(int eye);
@@ -120,6 +138,10 @@ float gevr_shim_crouch_offset(void);
 #define gevr_shim_frame_end()       ((void)0)
 #define gevr_shim_get_pads(o, n)    (0)
 #define gevr_shim_head_aim(t, v)    (0)
+#define gevr_shim_begin_eye_target(e)  (0)
+#define gevr_shim_end_eye_target(e)    ((void)0)
+#define gevr_shim_publish_eyes(c)      ((void)0)
+#define gevr_shim_alternate_eyes()     (0)
 #define gevr_shim_begin_eye(e)      ((void)0)
 #define gevr_shim_end_eye(e)        ((void)0)
 #define gevr_shim_current_eye()     (0)

@@ -20,6 +20,7 @@ void gevr_config_defaults(gevr_config *cfg)
     cfg->world_scale        = 100.0f;
     cfg->player_height      = 1.75f;
     cfg->ipd_scale          = 1.0f;
+    cfg->alternate_eyes     = 0;
 
     cfg->turn_mode          = GEVR_TURN_SNAP;
     cfg->snap_degrees       = 30.0f;
@@ -166,6 +167,7 @@ int gevr_config_set(gevr_config *cfg, const char *key, const char *value)
         return 0;
     }
 
+    if (!strcmp(key, "alternate_eyes")) { cfg->alternate_eyes = parse_bool(value, cfg->alternate_eyes); return 0; }
     if (!strcmp(key, "vignette_enabled")) { cfg->vignette_enabled = parse_bool(value, cfg->vignette_enabled); return 0; }
     if (!strcmp(key, "invert_pitch"))     { cfg->invert_pitch     = parse_bool(value, cfg->invert_pitch);     return 0; }
     if (!strcmp(key, "hud_enabled"))      { cfg->hud_enabled      = parse_bool(value, cfg->hud_enabled);      return 0; }

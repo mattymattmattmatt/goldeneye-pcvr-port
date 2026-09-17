@@ -37,6 +37,15 @@ typedef struct gevr_config {
     float player_height;      /* metres; used when no stage space is available */
     float ipd_scale;          /* 1.0 = true stereo. Lower flattens the world,
                                * which some players prefer at N64 scale. */
+    int   alternate_eyes;     /* 1 = draw one eye per frame, alternating, and
+                               * leave the other standing in the compositor.
+                               * Halves the render cost for a half-frame
+                               * disparity between the eyes -- the trade the
+                               * R.E.A.L. mods make to run demanding games in a
+                               * headset. Off by default: this game is cheap
+                               * enough for full stereo, and this is the
+                               * fallback for hardware that cannot hold the
+                               * frame rate. */
 
     /* ---- turning ---- */
     gevr_turn_mode turn_mode;
