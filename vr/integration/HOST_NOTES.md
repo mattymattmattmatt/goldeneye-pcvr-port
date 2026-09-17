@@ -32,32 +32,72 @@ The display list references the matrix *by address*. So the contents of
 same list, and the second pass draws the same geometry through a different
 frustum. One list, built once by the game, executed twice.
 
-That makes both stereo modes cheap to express at the same seam:
+**Correction to the first reading of this.** `gfx_run` is not a list executor,
+it is a whole-frame function: it calls `gfx_wapi->start_frame()` and
+`gfx_rapi->start_frame()`, **clears the framebuffer**, walks the list, appends
+the options overlay, flushes, and runs the present/resolve path. Calling it
+twice in a frame would have the second call clear what the first drew. So the
+eye loop cannot sit around `gfx_run`; it has to go *inside* it, around the
+inner `gfx_run_dl(commands)` — either by modifying `gfx_run` or by adding a
+`gfx_run_stereo` beside it. The fork can do either.
+
+The shape is then:
 
 ```c
-videoStartFrame();
+gfx_rapi->start_frame();
 for (eye = first; eye != done; eye = next(eye)) {
-    gevrBeginEye(eye);          /* bind that eye's swapchain image */
+    gfx_sp_reset();
+    gfx_rapi->start_draw_to_framebuffer(eyeFb[eye], scale);
+    gfx_rapi->clear_framebuffer(true, false);
     gevrPatchProjection(eye);   /* rewrite g_viProjectionMatrix in place */
-    gfx_run((Gfx *)t->t.data_ptr);
-    gevrEndEye(eye);
+    gfx_run_dl(commands);       /* same list, once per eye */
+    gfx_flush();
 }
-videoEndFrame();
 ```
 
 Both eyes per frame gives full stereo. One eye per frame, alternating, is
 alternate-eye rendering: half the render cost, each eye's image left standing
-in the compositor until its turn comes round again. The loop is the same code;
-only what `next()` returns differs, so both can be a config switch rather than
-two implementations.
+in the compositor until its turn comes round again. Only `next()` differs, so
+both can be a config switch rather than two implementations.
 
-**Unverified assumption.** This rests on `gfx_run` being replayable — that it
-walks the list without consuming or mutating it, and that whatever state it
-carries (segment table, matrix stack, combiner) either resets per run or does
-not leak between two runs inside one `gfx_start_frame`/`gfx_end_frame` pair.
-That has not been tested. It is the first thing to check, and if it does not
-hold, alternate-eye rendering still works, because that runs the list exactly
-once per frame as the host already does.
+## The replay assumption was tested, and holds
+
+The plan rested on `gfx_run_dl` being replayable — walking the list without
+consuming it, and not being disturbed by state the previous walk left behind.
+Reading the source got close: the walker never writes to the list, but
+`gfx_sp_reset()` resets only three fields (matrix stack depth, light count,
+lights-changed), so a second walk inherits everything else.
+
+`port/tests/test_dl_replay.cpp` settles it by running it. A recording backend
+captures every triangle the interpreter emits, the same list is walked twice,
+and the recordings are compared bit for bit — both across separate frames and,
+the case that actually matters, twice inside one frame. Both come back
+identical. Run it with `port/tests/run_dl_replay.sh`; it needs no ROM and no
+GPU.
+
+**True stereo by re-walking the game's own display list is viable.** The engine
+does not need to render twice.
+
+What that does *not* cover: the probe uses a stub backend, so it says nothing
+about the real GL backend's per-frame state, nor about the framebuffer clear
+described above. Those are answered by running the real thing.
+
+Three of the probe's own bugs are worth recording, because each produced a
+confident wrong answer first:
+
+- Comparing floats with `!=` reported a difference between bit-identical
+  buffers, because `NaN != NaN`. It now uses `memcmp`.
+- The NaNs came from the probe's list having no projection and no viewport,
+  and from packing the fixed-point `Mtx` wrongly — fast3d puts two matrix
+  elements in each `int32`, the even one in the high half. The probe now
+  writes the exact inverse of `gfx_sp_matrix`'s unpacking.
+- The last NaN came from calling `gfx_run` without `gfx_start_frame()`, which
+  leaves `gfx_current_dimensions.aspect_ratio` at zero;
+  `gfx_adjust_x_for_aspect_ratio` divides X by it. The host always brackets
+  the run, and now so does the probe.
+
+The probe refuses to report a result when any emitted float is NaN, or when
+nothing was emitted, rather than comparing noise against noise.
 
 ## The host already hooks the projection, and knows what else depends on it
 
