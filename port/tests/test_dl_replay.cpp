@@ -35,6 +35,7 @@
 #include <PR/gbi.h>
 
 #include "gfx_pc.h"   /* wraps gfx_api.h in extern "C" -- do not include that directly first */
+#include "gfx_stereo.h"
 #include "gfx_rendering_api.h"
 #include "gfx_window_manager_api.h"
 
@@ -448,10 +449,104 @@ int main(void)
     }
 
     printf("      identical\n");
-    printf("\n  REPLAY IS FAITHFUL at the interpreter level, both across frames\n"
-           "  and twice within one frame. True stereo by re-walking the game's\n"
-           "  own display list is viable; the remaining unknowns are the GL\n"
-           "  backend's per-frame state and the framebuffer clear inside\n"
-           "  gfx_run, neither of which a stub backend can answer.\n");
+
+    /*
+     * With the replay established, exercise the stereo seam itself.
+     *
+     * Three things have to hold. Installing no hooks must leave the renderer
+     * exactly as it was -- that is what keeps a non-VR build and future merges
+     * from upstream cheap. Two passes must produce two eyes' worth of
+     * geometry. And the two eyes must actually DIFFER: a seam that dutifully
+     * runs twice and draws the same thing both times is a stereo renderer that
+     * renders no stereo, and it would look perfectly healthy in a draw-call
+     * count.
+     */
+    printf("\n  --- stereo seam ---\n");
+
+    static int s_begin[2], s_end[2], s_adjust[2];
+    static float s_shift[2];
+
+    struct Cb {
+        static int  pass_count(void) { return 2; }
+        static int  eye_for_pass(int p) { return p; }
+        static int  begin_eye(int eye) { s_begin[eye]++; return 1; }
+        static void end_eye(int eye) { s_end[eye]++; }
+        static void adjust_projection(int eye, float m[4][4]) {
+            s_adjust[eye]++;
+            /* Stand in for the eye offset: shift X by a per-eye amount. The
+             * real hook applies an asymmetric frustum; the seam is the same. */
+            m[3][0] += s_shift[eye];
+        }
+    };
+
+    static const struct GfxStereoHooks hooks = {
+        Cb::pass_count, Cb::eye_for_pass, Cb::begin_eye, Cb::end_eye,
+        Cb::adjust_projection,
+    };
+
+    s_shift[0] = -0.25f;
+    s_shift[1] = +0.25f;
+    memset(s_begin, 0, sizeof(s_begin));
+    memset(s_end, 0, sizeof(s_end));
+    memset(s_adjust, 0, sizeof(s_adjust));
+
+    gfx_set_stereo_hooks(&hooks);
+    g_draws.clear();
+    g_recording = true;
+    gfx_start_frame(); gfx_run(g_dl); gfx_end_frame();
+    std::vector<DrawRecord> stereo = g_draws;
+    g_recording = false;
+    gfx_set_stereo_hooks(nullptr);
+
+    printf("  begin_eye L/R: %d/%d   end_eye L/R: %d/%d   adjust L/R: %d/%d\n",
+           s_begin[0], s_begin[1], s_end[0], s_end[1], s_adjust[0], s_adjust[1]);
+    printf("  draw calls: %zu (mono was %zu)\n", stereo.size(), first.size());
+
+    if (s_begin[0] != 1 || s_begin[1] != 1 || s_end[0] != 1 || s_end[1] != 1) {
+        printf("\n  FAIL: each eye must begin and end exactly once\n");
+        return 1;
+    }
+    if (s_adjust[0] < 1 || s_adjust[1] < 1) {
+        printf("\n  FAIL: the projection hook did not run for both eyes\n");
+        return 1;
+    }
+    if (stereo.size() != first.size() * 2) {
+        printf("\n  FAIL: expected twice the mono draw calls\n");
+        return 1;
+    }
+
+    /* Split the record in half and require the eyes to differ. */
+    {
+        std::vector<DrawRecord> l(stereo.begin(), stereo.begin() + first.size());
+        std::vector<DrawRecord> r(stereo.begin() + first.size(), stereo.end());
+        const char* ignored = "";
+        if (same(l, r, &ignored)) {
+            printf("\n  FAIL: both eyes drew identical geometry -- the per-eye\n"
+                   "  projection is not reaching the vertex transform.\n");
+            return 1;
+        }
+        printf("  the two eyes differ, as they must\n");
+    }
+
+    /* And with the hooks removed, the renderer is byte-for-byte what it was. */
+    g_draws.clear();
+    g_recording = true;
+    gfx_start_frame(); gfx_run(g_dl); gfx_end_frame();
+    std::vector<DrawRecord> after = g_draws;
+    g_recording = false;
+    if (!same(first, after, &why)) {
+        printf("\n  FAIL: uninstalling the hooks did not restore mono output: %s\n", why);
+        return 1;
+    }
+    printf("  removing the hooks restores the original output exactly\n");
+    printf("\n  PASS. The interpreter replays a list faithfully, across frames\n"
+           "  and twice within one, and the stereo seam turns that into two\n"
+           "  differing eyes without disturbing the mono path.\n"
+           "\n"
+           "  Scope: a stub backend, so this covers the interpreter and the\n"
+           "  seam only. It says nothing about the real GL backend's per-frame\n"
+           "  state, nor about the framebuffer clear in gfx_run, which is why\n"
+           "  each eye needs its own render target rather than sharing one.\n"
+           "  Those need the game actually running.\n");
     return 0;
 }

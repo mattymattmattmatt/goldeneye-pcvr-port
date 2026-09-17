@@ -31,6 +31,7 @@
 #include "gfx_window_manager_api.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
+#include "gfx_stereo.h"
 
 uintptr_t gfxFramebuffer;
 
@@ -1246,6 +1247,20 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+/* ----------------------------------------------------------------- stereo */
+/* Inert unless vr/ installs hooks; see gfx_stereo.h. */
+static const struct GfxStereoHooks* gfx_stereo = nullptr;
+static int gfx_stereo_eye = 0;
+
+extern "C" void gfx_set_stereo_hooks(const struct GfxStereoHooks* hooks) {
+    gfx_stereo = hooks;
+    gfx_stereo_eye = 0;
+}
+
+extern "C" int gfx_stereo_current_eye(void) {
+    return gfx_stereo ? gfx_stereo_eye : 0;
+}
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     float matrix[4][4];
 
@@ -1278,6 +1293,14 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     // For a modified GBI where fixed point values are replaced with floats
     memcpy(matrix, addr, sizeof(matrix));
 #endif
+
+    /* The eye's frustum goes on here, before the interpreter stores the
+     * matrix, so everything downstream -- the combined MP matrix, clipping,
+     * the vertex transform -- sees the eye's projection and not the game's.
+     * Applied on both the LOAD and MUL paths because the game uses both. */
+    if ((parameters & G_MTX_PROJECTION) && gfx_stereo && gfx_stereo->adjust_projection) {
+        gfx_stereo->adjust_projection(gfx_stereo_eye, matrix);
+    }
 
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {
@@ -3396,14 +3419,45 @@ extern "C" void gfx_run(Gfx* commands) {
     rdp.viewport_or_scissor_changed = true;
     rendering_state.viewport = {};
     rendering_state.scissor = {};
-    gfx_run_dl(commands);
+
     {
-        Gfx* overlay = optionsOverlayEmit();
-        if (overlay != nullptr) {
-            gfx_run_dl(overlay);
+        const int passes = (gfx_stereo && gfx_stereo->pass_count)
+                         ? gfx_stereo->pass_count() : 1;
+
+        for (int pass = 0; pass < passes; pass++) {
+            if (gfx_stereo) {
+                gfx_stereo_eye = gfx_stereo->eye_for_pass
+                               ? gfx_stereo->eye_for_pass(pass) : pass;
+                if (gfx_stereo->begin_eye && !gfx_stereo->begin_eye(gfx_stereo_eye)) {
+                    continue;   /* runtime declined this eye */
+                }
+                if (pass > 0) {
+                    /* Second and later passes start from the state the
+                     * previous walk left. Reset what gfx_run itself resets at
+                     * entry, so each eye sees the same starting point as the
+                     * first -- the replay probe covers exactly this. */
+                    gfx_sp_reset();
+                    rdp.viewport_or_scissor_changed = true;
+                    rendering_state.viewport = {};
+                    rendering_state.scissor = {};
+                }
+            }
+
+            gfx_run_dl(commands);
+            {
+                Gfx* overlay = optionsOverlayEmit();
+                if (overlay != nullptr) {
+                    gfx_run_dl(overlay);
+                }
+            }
+            gfx_flush();
+
+            if (gfx_stereo && gfx_stereo->end_eye) {
+                gfx_stereo->end_eye(gfx_stereo_eye);
+            }
         }
+        gfx_stereo_eye = 0;
     }
-    gfx_flush();
     gfxFramebuffer = 0;
 
     if (game_renders_to_framebuffer) {
