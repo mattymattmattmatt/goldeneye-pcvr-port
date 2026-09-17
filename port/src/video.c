@@ -452,6 +452,14 @@ int videoInit(void)
     gfx_pre_swap_hook = videoPreSwapCapture;
 
     initDone = 1;
+
+    /* Diagnostic, inert unless GE_STEREO_PROBE is set. See
+     * port/src/stereo_probe.c. */
+    {
+        extern void stereoProbeInit(void);
+        stereoProbeInit();
+    }
+
     sysLogPrintf(LOG_INFO, "video: %dx%d window (native %dx%d)",
                  (int)gfx_current_dimensions.width, (int)gfx_current_dimensions.height,
                  GE_NATIVE_W, GE_NATIVE_H);
