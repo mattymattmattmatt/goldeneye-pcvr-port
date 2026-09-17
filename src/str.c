@@ -99,7 +99,33 @@ int strncmp(const char *str1, const char *str2, size_t n) {
     }
 }
 
-unsigned char toupper(unsigned char c) {
+
+#ifdef PORT
+/*
+ * The four ctype functions below are file-local in the port build.
+ *
+ * They are the N64 SDK's own, decompiled, and on Windows they collide at link
+ * time with the C runtime's: recent MinGW-w64 force-defines isspace and
+ * friends in a single libmsvcrt member, so whenever the linker pulls that
+ * member in for anything else, the definitions here become a duplicate --
+ * "multiple definition of `isspace'". Older toolchains pulled the members more
+ * lazily and never hit it, which is why this only appears on a current MSYS2.
+ *
+ * Nothing outside this file calls them. strtol below is the only caller;
+ * xprintf.c has its own isdigit macro. So internal linkage removes the clash
+ * without changing a single call or its behaviour, and the game keeps its own
+ * definitions rather than silently inheriting the CRT's -- which differ: the
+ * SDK's isspace does not count '\r' as space.
+ *
+ * strcmp, strncmp and strtol cannot take the same treatment -- they have real
+ * callers across the game -- and do not currently collide.
+ */
+#define GE_CTYPE_LINKAGE static
+#else
+#define GE_CTYPE_LINKAGE
+#endif
+
+GE_CTYPE_LINKAGE unsigned char toupper(unsigned char c) {
     if ((c >= 'a') && (c <= 'z')) {
         return ('A' + c - 'a');
     } else {
@@ -107,16 +133,16 @@ unsigned char toupper(unsigned char c) {
     }
 }
 
-int isdigit(unsigned char c) {
+GE_CTYPE_LINKAGE int isdigit(unsigned char c) {
     return ((c >= '0') && (c <= '9'));
 }
 
-int isalpha(unsigned char c) {
+GE_CTYPE_LINKAGE int isalpha(unsigned char c) {
     return (((c >= 'a') && (c <= 'z')) || 
             ((c >= 'A') && (c <= 'Z')));
 }
 
-int isspace(unsigned char c) {
+GE_CTYPE_LINKAGE int isspace(unsigned char c) {
     return ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\f') || (c == '\v'));
 }
 
