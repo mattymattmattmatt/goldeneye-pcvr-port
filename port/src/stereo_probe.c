@@ -24,7 +24,7 @@
 
 #include "system.h"
 
-static int g_enabled;
+static int g_enabled;   /* 1 = inset probe, 2 = wide-frustum cull probe */
 static int g_eyes_drawn[2];
 
 static int probe_pass_count(void) { return 2; }
@@ -79,6 +79,55 @@ static void probe_adjust_projection(int eye, float m[4][4])
         return;
     }
 
+    if (g_enabled == 2) {
+        /*
+         * Cull-plane probe. Widens eye 1's frustum instead of shrinking it,
+         * which is what a real headset does relative to the game's 4:3 view.
+         *
+         * The engine derives its frustum-cull plane normals and its fog/LOD
+         * distance scale from the projection IT built (fr.c's D222 note:
+         * currentPlayerSetPerspective -> c_perspfovy ->
+         * currentPlayerSetCameraScale). Substituting a wider frustum at the
+         * renderer does not tell the engine, so anything outside the nominal
+         * frustum has already been culled before the renderer sees the list.
+         *
+         * If that is happening, widening here reveals *nothing new* at the
+         * edges -- the extra field of view is filled with background rather
+         * than the walls that are really there. That is the symptom to look
+         * for, and it is why this is a separate mode: shrinking the frustum
+         * (mode 1) can never show it.
+         */
+        /*
+         * Widen, then inset. Both in one eye so the frame keeps its control:
+         * eye 0 is the nominal view at full size, and the corner holds the
+         * same scene through a frustum 1/0.55 wider. Overdrawing eye 0 with a
+         * full-screen wide view instead would leave nothing to compare against
+         * -- and comparing across runs does not work, because two runs are in
+         * different rooms at the same frame number.
+         *
+         * The widen factor is GE_STEREO_WIDEN (default 0.55, i.e. 1/0.55 =
+         * 1.8x the field of view), so the point at which culling starts to
+         * show can be found by sweeping it rather than argued about.
+         */
+        {
+            const char *wv = getenv("GE_STEREO_WIDEN");
+            float widen = wv && *wv ? (float)atof(wv) : 0.55f;
+            float k;
+
+            if (!(widen > 0.01f)) { widen = 0.55f; }
+            k = widen * 0.25f;
+            for (j = 0; j < 4; j++) {
+                m[j][0] *= k;
+                m[j][1] *= k;
+            }
+        }
+        for (j = 0; j < 4; j++) {
+            m[j][0] += 0.70f * m[j][3];
+            m[j][1] += -0.70f * m[j][3];
+        }
+        return;
+    }
+
     for (j = 0; j < 4; j++) {
         m[j][0] *= 0.25f;
         m[j][1] *= 0.25f;
@@ -102,11 +151,13 @@ void stereoProbeInit(void)
     if (!v || !*v || *v == '0') {
         return;
     }
-    g_enabled = 1;
+    g_enabled = atoi(v);
+    if (g_enabled < 1) { g_enabled = 1; }
     gfx_set_stereo_hooks(&g_probe_hooks);
     sysLogPrintf(LOG_NOTE,
-                 "GE_STEREO_PROBE: per-eye seam installed; each eye is "
-                 "squeezed into half the screen so one frame shows both.");
+                 "GE_STEREO_PROBE=%d: per-eye seam installed (%s)", g_enabled,
+                 g_enabled == 2 ? "eye 1 frustum WIDENED, cull-plane probe"
+                                : "eye 1 as a quarter-size inset");
 }
 
 void stereoProbeReport(void)

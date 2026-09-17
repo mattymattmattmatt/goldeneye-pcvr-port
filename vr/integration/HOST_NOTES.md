@@ -147,23 +147,46 @@ catches every projection the list loads rather than only the one call site.
 So the game-side patch is down to two files: `joy.c` for the pads and
 `bondview2.c` for head aim. `fr.c` is untouched.
 
-## Known gap: cull planes are still the game's
+## Cull planes: the risk was smaller than it looked
 
 `fr.c`'s D222 note records that `currentPlayerSetPerspective` feeds
 `c_perspfovy`, from which `currentPlayerSetCameraScale()` derives the
 frustum-cull plane normals and the fog/LOD distance scale. Those are computed
 from the *nominal* projection the game built, not from the eye frusta the
-renderer substitutes.
+renderer substitutes, so the worry was that geometry just outside the nominal
+frustum -- but inside an eye's -- would be culled before the renderer ever saw
+it, and would read as a renderer fault rather than a culling one.
 
-For stereo that is a real mismatch. Each eye's frustum is asymmetric and turned
-slightly outward, so geometry just outside the nominal frustum can be inside an
-eye's -- and will have been culled before the renderer ever sees it. The
-symptom would be objects popping in at the outer edge of each eye, worse at
-wider IPD, and it would look like a renderer fault rather than a culling one.
+Measured instead of argued about. `GE_STEREO_PROBE=2` widens eye 1's frustum
+and insets it, so one frame holds the nominal view and a wider view of the same
+scene. On Facility at `GE_STEREO_WIDEN=0.30` -- **3.3x the nominal field of
+view**, well beyond anything a headset asks for -- the widened view is filled
+to its edges: walls both sides, ceiling, floor, the gantry, Bond's hand and the
+ammo counter. No empty band, no missing geometry.
 
-The fix is to widen the FOV fed to `currentPlayerSetPerspective` so the cull
-volume covers the union of both eyes. The host already has that plumbing, since
-`portScaleFovY` exists for exactly this reason at exactly that call site. What
-it needs is the widening factor, which is only known once the runtime reports
-its FOVs — so this wants doing with a headset attached rather than guessed at
-here.
+So frustum culling is not clipping tightly to the nominal frustum here.
+GoldenEye's visibility is largely portal and room based (the bg/stan data
+decides which rooms are drawn), and the per-frustum planes are evidently
+generous enough that a realistic stereo widening -- 1.5x to 2x -- has room to
+spare.
+
+This is one scene at one moment, so it is evidence rather than proof, and a
+level with long sightlines and aggressive room culling could still show it. But
+it is no longer worth pre-emptively widening `currentPlayerSetPerspective`: if
+pop-in ever appears at the outer edge of one eye, this probe is how to confirm
+the cause, and the host's `portScaleFovY` is where the fix would go.
+
+### How not to measure this
+
+Two attempts gave confident wrong answers first, both from the same mistake.
+
+A sweep across separate runs -- 1.0x, 1.8x, 3.3x, each its own launch --
+produced a flat "7% void" at every setting and images that looked nothing like
+each other. Both were artefacts: the percentage was measuring the letterbox
+bars, which do not change, and the images were of **different rooms**, because
+two runs of this game are not in the same place at the same frame number. The
+same trap had already been recorded a section earlier and was walked into
+again.
+
+Anything compared across runs here is worthless. The comparison has to live
+inside one frame, which is what eye 0 as an untouched control is for.

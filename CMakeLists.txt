@@ -584,3 +584,37 @@ if(WIN32)
 endif()
 
 message(STATUS "Output binary: ${BIN_NAME}")
+
+# ----------------------------------------------------------------------------
+# VR (optional)
+# ----------------------------------------------------------------------------
+# vr/ is its own CMake project and builds standalone; this brings it in and
+# switches on the game-side hooks. Off unless asked for, and off anyway when no
+# OpenXR runtime is present, so the ordinary build is untouched either way --
+# nothing below runs without GE_VR, and the fast3d stereo seam is inert until
+# vr/ installs its hooks.
+option(GE_VR "Build the OpenXR VR layer into the game" OFF)
+
+if(GE_VR)
+  add_subdirectory(vr ${CMAKE_BINARY_DIR}/vr)
+
+  if(TARGET gevr_runtime)
+    target_compile_definitions(ge007 PRIVATE GE_VR)
+    target_include_directories(ge007 PRIVATE
+      "${CMAKE_SOURCE_DIR}/vr/include"
+      "${CMAKE_SOURCE_DIR}/vr/shim"
+      "${CMAKE_SOURCE_DIR}/port/fast3d")   # gevr_stereo.c includes gfx_stereo.h
+    # gevr_stereo.c is compiled here rather than inside vr/, because it is the
+    # one VR source that includes the renderer's header and so belongs to
+    # whichever build owns fast3d.
+    target_sources(ge007 PRIVATE
+      "${CMAKE_SOURCE_DIR}/vr/shim/gevr_shim.c"
+      "${CMAKE_SOURCE_DIR}/vr/shim/gevr_stereo.c")
+    target_link_libraries(ge007 gevr_runtime)
+    message(STATUS "VR: enabled (OpenXR runtime found)")
+  else()
+    message(WARNING
+      "VR: requested but no OpenXR runtime was found; building flat. "
+      "Install libopenxr-dev (or set OpenXR_DIR) and reconfigure.")
+  endif()
+endif()

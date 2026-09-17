@@ -61,7 +61,7 @@ if(NOT SDL2_FOUND)
 endif()
 
 set(GEVR_HAVE_RUNTIME FALSE)
-if((OpenXR_FOUND OR OPENXR_FOUND) AND (SDL2_FOUND OR SDL2PC_FOUND))
+if((OpenXR_FOUND OR OPENXR_FOUND) AND (SDL2_FOUND OR SDL2PC_FOUND OR SDL2_LIBRARY))
     set(GEVR_HAVE_RUNTIME TRUE)
 endif()
 
@@ -79,10 +79,22 @@ if(GEVR_HAVE_RUNTIME)
         target_link_libraries(gevr_runtime PUBLIC PkgConfig::OPENXR)
     endif()
 
-    if(SDL2_FOUND)
+    # SDL2 turns up in three shapes depending on who found it. Standalone, the
+    # config package gives the SDL2::SDL2 imported target. As a subdirectory of
+    # the host port, the parent has already run an old-style find_package that
+    # sets SDL2_LIBRARY and no target at all -- linking SDL2::SDL2 there fails
+    # configure with "target was not found". And on a pkg-config-only system
+    # there is PkgConfig::SDL2PC. Check for what actually exists rather than
+    # assuming the modern one.
+    if(TARGET SDL2::SDL2)
         target_link_libraries(gevr_runtime PUBLIC SDL2::SDL2)
-    else()
+    elseif(SDL2_LIBRARY OR SDL2_LIBRARIES)
+        target_include_directories(gevr_runtime PUBLIC ${SDL2_INCLUDE_DIR} ${SDL2_INCLUDE_DIRS})
+        target_link_libraries(gevr_runtime PUBLIC ${SDL2_LIBRARY} ${SDL2_LIBRARIES})
+    elseif(TARGET PkgConfig::SDL2PC)
         target_link_libraries(gevr_runtime PUBLIC PkgConfig::SDL2PC)
+    else()
+        message(FATAL_ERROR "gevr_runtime: SDL2 was reported found but exposes neither a target nor a library variable")
     endif()
 
     # glXGetCurrentContext / wglGetCurrentContext for the graphics binding.
