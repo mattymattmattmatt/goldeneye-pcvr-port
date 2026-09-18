@@ -64,6 +64,7 @@ void gevr_config_defaults(gevr_config *cfg)
     cfg->hud_distance       = 1.6f;
     cfg->hud_scale          = 1.0f;
     cfg->mirror_window      = 1;
+    cfg->flip_eyes_y        = 0;
 
     cfg->swap_sticks        = 0;
     cfg->left_handed        = 0;
@@ -180,6 +181,7 @@ int gevr_config_set(gevr_config *cfg, const char *key, const char *value)
     if (!strcmp(key, "invert_pitch"))     { cfg->invert_pitch     = parse_bool(value, cfg->invert_pitch);     return 0; }
     if (!strcmp(key, "hud_enabled"))      { cfg->hud_enabled      = parse_bool(value, cfg->hud_enabled);      return 0; }
     if (!strcmp(key, "mirror_window"))    { cfg->mirror_window    = parse_bool(value, cfg->mirror_window);    return 0; }
+    if (!strcmp(key, "flip_eyes_y"))      { cfg->flip_eyes_y      = parse_bool(value, cfg->flip_eyes_y);      return 0; }
     if (!strcmp(key, "swap_sticks"))      { cfg->swap_sticks      = parse_bool(value, cfg->swap_sticks);      return 0; }
     if (!strcmp(key, "left_handed"))      { cfg->left_handed      = parse_bool(value, cfg->left_handed);      return 0; }
 

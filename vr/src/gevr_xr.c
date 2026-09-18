@@ -64,6 +64,24 @@ struct gevr_xr {
     XrCompositionLayerProjectionView proj_views[GEVR_EYE_COUNT];
     int              views_valid;
 
+    /*
+     * Whether each eye's swapchain has ever had an image released into it.
+     *
+     * A projection layer names a swapchain per view, and the runtime composites
+     * whichever image was last released there. Naming one that has never had an
+     * image released is invalid usage -- and before an eye is first acquired,
+     * proj_views[e] is still zeroed, so the layer would carry XR_NULL_HANDLE.
+     * That is what the frames before this flag existed were submitting on every
+     * frame the eye pass declined: a layer the runtime could only throw away.
+     *
+     * Latched rather than per-frame on purpose. Alternate-eye rendering draws
+     * one eye per frame and leaves the other standing in the compositor, which
+     * is legal and is the whole point of it; a per-frame flag would refuse to
+     * submit anything at all in that mode.
+     */
+    int              eye_ready[GEVR_EYE_COUNT];
+    int              layer_submitted;
+
     int              rec_width, rec_height;
 
     XrFrameState     frame_state;
@@ -1425,8 +1443,22 @@ void gevr_xr_release_eye(gevr_xr *xr, int eye)
 
     memset(&ri, 0, sizeof(ri));
     ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
-    xrReleaseSwapchainImage(sc->handle, &ri);
+    if (XR_SUCCEEDED(xrReleaseSwapchainImage(sc->handle, &ri))) {
+        xr->eye_ready[eye] = 1;
+    }
     sc->acquired = 0;
+}
+
+static int eyes_ready(const gevr_xr *xr)
+{
+    int e;
+
+    for (e = 0; e < GEVR_EYE_COUNT; e++) {
+        if (!xr->eye_ready[e] || !xr->proj_views[e].subImage.swapchain) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 void gevr_xr_end_frame(gevr_xr *xr)
@@ -1444,7 +1476,7 @@ void gevr_xr_end_frame(gevr_xr *xr)
     ei.displayTime = xr->frame_state.predictedDisplayTime;
     ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 
-    if (xr->should_render && xr->views_valid) {
+    if (xr->should_render && xr->views_valid && eyes_ready(xr)) {
         memset(&layer, 0, sizeof(layer));
         layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
         layer.space = xr->base_space;
@@ -1454,9 +1486,15 @@ void gevr_xr_end_frame(gevr_xr *xr)
         layers[0] = (const XrCompositionLayerBaseHeader *)&layer;
         ei.layerCount = 1;
         ei.layers = layers;
+        xr->layer_submitted = 1;
     } else {
+        /* An empty frame is a valid frame. Submitting no layers leaves the
+         * compositor showing whatever it showed last, which is the correct
+         * thing to do while we have nothing to give it -- and far better than
+         * handing it a layer pointing at a swapchain we never drew into. */
         ei.layerCount = 0;
         ei.layers = NULL;
+        xr->layer_submitted = 0;
     }
 
     xr->r_end = xrEndFrame(xr->session, &ei);
@@ -1496,10 +1534,10 @@ void gevr_xr_debug_line(const gevr_xr *xr, char *buf, int len)
         return;
     }
     snprintf(buf, (size_t)len,
-             "state=%s running=%d shouldRender=%d views=%d "
+             "state=%s running=%d shouldRender=%d views=%d layer=%d "
              "eye=%dx%d wait=%d begin=%d acq=%d end=%d",
              session_state_name(xr->state), xr->session_running,
-             xr->should_render, xr->views_valid,
+             xr->should_render, xr->views_valid, xr->layer_submitted,
              xr->rec_width, xr->rec_height,
              (int)xr->r_wait, (int)xr->r_begin,
              (int)xr->r_acquire, (int)xr->r_end);

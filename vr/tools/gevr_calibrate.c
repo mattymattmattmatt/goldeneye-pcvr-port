@@ -289,7 +289,7 @@ int main(int argc, char **argv)
                 gevr_xr_release_eye(xr, eye);
 
                 if (eye == GEVR_EYE_LEFT && cfg.mirror_window) {
-                    gevr_gl_blit_mirror(fbo, tgt.width, tgt.height, 960, 540);
+                    gevr_gl_blit_mirror(fbo, tgt.width, tgt.height, 960, 540, 0);
                 }
             }
         }

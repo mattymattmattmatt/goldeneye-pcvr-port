@@ -39,7 +39,11 @@ void gevr_gl_draw_vignette(float strength);
 
 /* Blits an eye texture to the desktop mirror window. */
 void gevr_gl_blit_mirror(unsigned src_fbo, int src_w, int src_h,
-                         int dst_w, int dst_h);
+                         int dst_w, int dst_h, int flip_y);
+
+/* Turns an eye target upside down in place, for runtimes whose OpenGL interop
+ * does not account for GL's bottom-left framebuffer origin. See gevr_gl.c. */
+void gevr_gl_flip_target(unsigned fbo, int width, int height);
 
 /* Immediate-mode-style textured quad helper used by the calibrate tool and
  * the HUD panel. Vertices are in normalised device coordinates. */

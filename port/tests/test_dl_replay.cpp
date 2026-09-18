@@ -93,8 +93,29 @@ static void rec_upload_texture(const uint8_t*, uint32_t, uint32_t, bool) {}
 static void rec_set_sampler_parameters(int, bool, uint32_t, uint32_t, bool) {}
 static void rec_set_depth_mode(bool, bool, bool, bool, uint16_t) {}
 static void rec_set_depth_range(float, float) {}
-static void rec_set_viewport(int, int, int, int) {}
-static void rec_set_scissor(int, int, int, int) {}
+/*
+ * Viewports and scissors, recorded.
+ *
+ * The eye passes render into a target that is nothing like the window's size,
+ * and every viewport and scissor the display list sets is scaled and offset by
+ * fast3d before it reaches the backend. Get that offset wrong and the frame
+ * lands outside the eye entirely -- with the draw-call count, the geometry and
+ * the per-eye projection all still perfect, which is why only this can catch
+ * it.
+ */
+struct RectRecord {
+    int x, y, w, h;
+};
+static std::vector<RectRecord> g_rects;
+
+static void rec_set_viewport(int x, int y, int w, int h)
+{
+    if (g_recording) { g_rects.push_back({ x, y, w, h }); }
+}
+static void rec_set_scissor(int x, int y, int w, int h)
+{
+    if (g_recording) { g_rects.push_back({ x, y, w, h }); }
+}
 static void rec_set_use_alpha(bool, bool) {}
 static void rec_init(void) {}
 static void rec_on_resize(void) {}
@@ -304,6 +325,11 @@ static void build_list(void)
 
     Gfx* p = g_dl;
     gSPViewport(p++, &g_vp);
+    /* A scissor too. It is the one rect that reaches the backend through
+     * immediates rather than a pointer into the list, so it is the piece of
+     * gfx_adjust_viewport_or_scissor a probe with no RDRAM can actually
+     * observe -- and the eye-bounds check below is what it is here for. */
+    gDPSetScissor(p++, G_SC_NON_INTERLACE, 0, 0, 320, 240);
     gSPMatrix(p++, &g_proj, G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
     gSPMatrix(p++, &g_mv, G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
     gSPVertex(p++, g_verts, 3, 0);
@@ -334,6 +360,22 @@ static bool same(const std::vector<DrawRecord>& a, const std::vector<DrawRecord>
 int main(void)
 {
     printf("fast3d: can one display list be walked twice in a frame?\n\n");
+
+    /*
+     * The game's native resolution, which nothing else here would set.
+     *
+     * SCREEN_WIDTH and SCREEN_HEIGHT are gfx_current_native_viewport, and
+     * RATIO_X/RATIO_Y divide by them -- so leaving them at zero makes every
+     * ratio infinite and every viewport and scissor collapse to 0x0 on the way
+     * to the backend. The probe still compared geometry happily through all of
+     * that, which is exactly how much of the frame it was quietly not
+     * exercising.
+     */
+    gfx_current_native_viewport.x = 0;
+    gfx_current_native_viewport.y = 0;
+    gfx_current_native_viewport.width = 320;
+    gfx_current_native_viewport.height = 240;
+    gfx_current_native_aspect = 4.0f / 3.0f;
 
     struct GfxInitSettings s;
     memset(&s, 0, sizeof(s));
@@ -465,12 +507,17 @@ int main(void)
 
     static int s_begin[2], s_end[2], s_adjust[2];
     static float s_shift[2];
+    static const int kEyeW = 2688;
+    static const int kEyeH = 2880;
 
     struct Cb {
         static int  pass_count(void) { return 2; }
         static int  eye_for_pass(int p) { return p; }
         static int  begin_eye(int eye, int *w, int *h) {
-            (void)w; (void)h;   /* recording backend; size is irrelevant */
+            /* A real eye target: nothing like the window, and taller than it
+             * is wide, which is what a Quest 3 per-eye swapchain looks like. */
+            if (w) { *w = kEyeW; }
+            if (h) { *h = kEyeH; }
             s_begin[eye]++;
             return 1;
         }
@@ -496,6 +543,7 @@ int main(void)
 
     gfx_set_stereo_hooks(&hooks);
     g_draws.clear();
+    g_rects.clear();
     g_recording = true;
     gfx_start_frame(); gfx_run(g_dl); gfx_end_frame();
     std::vector<DrawRecord> stereo = g_draws;
@@ -530,6 +578,44 @@ int main(void)
             return 1;
         }
         printf("  the two eyes differ, as they must\n");
+    }
+
+    /*
+     * Every viewport and scissor has to land inside the eye target.
+     *
+     * This is the check that would have caught the frame being shoved 2160
+     * pixels below the bottom of the eye: gfx_adjust_viewport_or_scissor ends
+     * with  y += window.height - (viewport.y + viewport.height), which is zero
+     * only while the window dimensions travel with the eye ones. They did not,
+     * so every rect came out far below the target and the headset showed
+     * black -- with two eyes' worth of correct, differing geometry behind it.
+     */
+    {
+        size_t bad = 0;
+
+        for (size_t i = 0; i < g_rects.size(); i++) {
+            const RectRecord& r = g_rects[i];
+            if (r.x < 0 || r.y < 0 || r.w <= 0 || r.h <= 0 ||
+                r.x + r.w > kEyeW || r.y + r.h > kEyeH) {
+                if (bad < 3) {
+                    printf("    outside the eye: %dx%d at (%d,%d)\n",
+                           r.w, r.h, r.x, r.y);
+                }
+                bad++;
+            }
+        }
+        if (g_rects.empty()) {
+            printf("\n  FAIL: no viewport or scissor was set during the eye passes\n");
+            return 1;
+        }
+        if (bad) {
+            printf("\n  FAIL: %zu of %zu viewports/scissors fall outside the\n"
+                   "  %dx%d eye target -- the frame is being drawn off it.\n",
+                   bad, g_rects.size(), kEyeW, kEyeH);
+            return 1;
+        }
+        printf("  all %zu viewports/scissors land inside the %dx%d eye\n",
+               g_rects.size(), kEyeW, kEyeH);
     }
 
     /* And with the hooks removed, the renderer is byte-for-byte what it was. */

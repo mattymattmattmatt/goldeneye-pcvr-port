@@ -141,9 +141,18 @@ one place:
   before it stops following). The default 0.6 m covers leaning out of cover and
   ducking from a chair without letting someone who stands up and walks away
   carry the camera through a wall.
-- **The view turns the wrong way, or is upside down.** Checked on hardware and
-  believed right, but `vr/src/gevr_engine.c` owns both conventions if it is
-  not: `GEVR_ENGINE_PITCH_SIGN` and the negation inside
+- **The whole picture is upside down.** Set `flip_eyes_y=1` in `gevr.ini`. No
+  rebuild needed. OpenGL's framebuffer origin is bottom-left and most PC
+  runtimes composite in Direct3D, whose origin is top-left; a runtime with
+  native OpenGL support is meant to account for that when it copies the image
+  across, and there is no way to ask it whether it does. VDXR is untested here
+  either way, so this ships off and is one line to turn on. It costs one blit
+  per eye. If only the *mirror window* on the desktop is upside down and the
+  headset is fine, that is the opposite case -- report it rather than changing
+  this, because the two are wired to the same key on purpose.
+- **The view turns the wrong way, or is mirrored left-to-right.** Checked on
+  hardware and believed right, but `vr/src/gevr_engine.c` owns both conventions
+  if it is not: `GEVR_ENGINE_PITCH_SIGN` and the negation inside
   `gevr_vr_yaw_to_engine`. Flipping one of those is the whole fix.
 - **The world is the wrong size** -- everything feels like a doll's house, or
   like you are six inches tall. `world_scale` in `gevr.ini` is GoldenEye units

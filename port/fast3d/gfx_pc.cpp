@@ -3435,6 +3435,7 @@ extern "C" void gfx_run(Gfx* commands) {
          * path below, the mirror, the overlay -- still sees the window.
          */
         const struct GfxDimensions saved_dimensions = gfx_current_dimensions;
+        const struct GfxDimensions saved_window = gfx_current_window_dimensions;
         const struct XYWidthHeight saved_viewport = gfx_current_game_window_viewport;
 
         for (int pass = 0; pass < passes; pass++) {
@@ -3456,6 +3457,32 @@ extern "C" void gfx_run(Gfx* commands) {
                     gfx_current_dimensions.width = (uint32_t)eye_w;
                     gfx_current_dimensions.height = (uint32_t)eye_h;
                     gfx_current_dimensions.aspect_ratio = (float)eye_w / (float)eye_h;
+
+                    /*
+                     * The window has to move with it, not just the draw area.
+                     * gfx_adjust_viewport_or_scissor finishes every viewport
+                     * and scissor with
+                     *
+                     *   y += window.height - (viewport.y + viewport.height)
+                     *
+                     * which is zero only while those two agree. Leave the
+                     * window at 720 against a 2880-tall eye and that is a
+                     * -2160 pixel shove applied to every viewport and scissor
+                     * in the frame, putting all of them below the bottom of
+                     * the eye target. Nothing is clipped away in software and
+                     * the draw-call count is unchanged, so this reads exactly
+                     * like a renderer that is working -- and shows a black
+                     * headset. It is also what rsp.aspect_scale is taken from,
+                     * so the eye gets the eye's aspect rather than the
+                     * monitor's.
+                     *
+                     * Restored after the loop, so the present path, the
+                     * options overlay and the mirror all still see the real
+                     * window.
+                     */
+                    gfx_current_window_dimensions = gfx_current_dimensions;
+                    gfx_current_game_window_viewport.x = 0;
+                    gfx_current_game_window_viewport.y = 0;
                     gfx_current_game_window_viewport.width = eye_w;
                     gfx_current_game_window_viewport.height = eye_h;
                 }
@@ -3497,6 +3524,7 @@ extern "C" void gfx_run(Gfx* commands) {
         }
         gfx_stereo_eye = 0;
         gfx_current_dimensions = saved_dimensions;
+        gfx_current_window_dimensions = saved_window;
         gfx_current_game_window_viewport = saved_viewport;
     }
     gfxFramebuffer = 0;

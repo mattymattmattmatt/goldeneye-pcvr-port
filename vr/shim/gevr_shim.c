@@ -388,6 +388,17 @@ void gevr_shim_end_eye_target(int eye)
     if (!g_vr.active || eye < 0 || eye >= GEVR_EYE_COUNT) {
         return;
     }
+
+    /* Before the release, while the image is still ours to write to. */
+    if (g_vr.cfg.flip_eyes_y) {
+        const gevr_eye_target *t = &g_vr.eye_target[eye];
+
+        if (t->gl_texture && t->width > 0 && t->height > 0) {
+            gevr_gl_flip_target(gevr_gl_framebuffer_for(t->gl_texture, t->gl_depth),
+                                t->width, t->height);
+        }
+    }
+
     gevr_xr_release_eye(g_vr.xr, eye);
 }
 
@@ -412,7 +423,11 @@ void gevr_shim_blit_mirror(void)
      * swapchain image has already been released by this point, but the texture
      * is still readable -- the runtime only reuses it a frame later, and the
      * blit is a read. */
-    fbo = gevr_gl_framebuffer_for(t->gl_texture, 0);
+    /* Same (colour, depth) key the eye pass used, so this reuses that
+     * framebuffer instead of creating a second one per swapchain image -- which
+     * is a different cache entry for the same texture, and on a runtime handing
+     * out the maximum number of images would push the cache over. */
+    fbo = gevr_gl_framebuffer_for(t->gl_texture, t->gl_depth);
     if (!fbo) {
         return;
     }
@@ -428,7 +443,8 @@ void gevr_shim_blit_mirror(void)
             dw = t->width;
             dh = t->height;
         }
-        gevr_gl_blit_mirror(fbo, t->width, t->height, dw, dh);
+        gevr_gl_blit_mirror(fbo, t->width, t->height, dw, dh,
+                            g_vr.cfg.flip_eyes_y);
     }
 }
 

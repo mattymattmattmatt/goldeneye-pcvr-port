@@ -54,6 +54,8 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_LINEAR                       0x2601
 #define GL_NEAREST                      0x2600
 #define GL_CULL_FACE                    0x0B44
+#define GL_SCISSOR_TEST                 0x0C11
+#define GL_RGBA8                        0x8058
 
 /* --------------------------------------------------------------- loader */
 
@@ -165,11 +167,22 @@ typedef struct fbo_entry {
     unsigned fbo;
 } fbo_entry;
 
-/* Runtimes hand out a handful of swapchain images and cycle them, so a tiny
- * fixed cache covers every image both eyes will ever use. */
-#define GEVR_FBO_CACHE 16
+/*
+ * Runtimes hand out a handful of swapchain images and cycle them, so a small
+ * fixed cache covers every image both eyes will ever use: at most
+ * GEVR_MAX_SWAPCHAIN_IMAGES per eye, and callers are expected to ask for the
+ * same (colour, depth) pair the eye pass used rather than inventing a second
+ * key for the same image.
+ *
+ * Full is handled by evicting round-robin rather than by giving up on the
+ * cache, because the alternative is generating a framebuffer per eye per frame
+ * and never deleting it -- which works, and looks like working, right up until
+ * the driver runs out an hour into a session.
+ */
+#define GEVR_FBO_CACHE 20
 static fbo_entry s_fbos[GEVR_FBO_CACHE];
 static int       s_fbo_count;
+static int       s_fbo_next;     /* eviction cursor, only used once full */
 
 unsigned gevr_gl_create_depth(int width, int height)
 {
@@ -227,11 +240,18 @@ unsigned gevr_gl_framebuffer_for(unsigned color_tex, unsigned depth_rb)
     p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     if (s_fbo_count < GEVR_FBO_CACHE) {
-        s_fbos[s_fbo_count].color = color_tex;
-        s_fbos[s_fbo_count].depth = depth_rb;
-        s_fbos[s_fbo_count].fbo = fbo;
-        s_fbo_count++;
+        i = s_fbo_count++;
+    } else {
+        i = s_fbo_next;
+        s_fbo_next = (s_fbo_next + 1) % GEVR_FBO_CACHE;
+        if (s_fbos[i].fbo) {
+            GLuint old_fbo = s_fbos[i].fbo;
+            p_glDeleteFramebuffers(1, &old_fbo);
+        }
     }
+    s_fbos[i].color = color_tex;
+    s_fbos[i].depth = depth_rb;
+    s_fbos[i].fbo = fbo;
     return fbo;
 }
 
@@ -384,15 +404,92 @@ void gevr_gl_draw_vignette(float strength)
 }
 
 void gevr_gl_blit_mirror(unsigned src_fbo, int src_w, int src_h,
-                         int dst_w, int dst_h)
+                         int dst_w, int dst_h, int flip_y)
 {
     if (!s_ready) {
         return;
     }
+    /* A blit obeys the scissor box, and fast3d leaves one set from the last
+     * draw of the frame. Left enabled, the mirror appears as whatever sliver
+     * of the window that box happened to cover. */
+    p_glDisable(GL_SCISSOR_TEST);
     p_glBindFramebuffer(GL_READ_FRAMEBUFFER, src_fbo);
     p_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    p_glBlitFramebuffer(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
-                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    /* flip_y undoes gevr_gl_flip_target: when the eye has been flipped for the
+     * runtime's benefit, the desktop needs it the other way up again. */
+    if (flip_y) {
+        p_glBlitFramebuffer(0, 0, src_w, src_h, 0, dst_h, dst_w, 0,
+                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    } else {
+        p_glBlitFramebuffer(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
+                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    }
+    p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+/* --------------------------------------------------------- vertical flip */
+
+/*
+ * Turn an eye target upside down in place.
+ *
+ * OpenGL's framebuffer origin is bottom-left; the D3D-backed runtimes that
+ * most PC headsets go through expect top-left. A runtime with native OpenGL
+ * support is meant to account for that, and several do -- but the ones built
+ * on a D3D compositor route OpenGL through an interop copy, and whether that
+ * copy flips is per-runtime behaviour that no specification pins down. There
+ * is no way to ask, and no way to tell apart from looking. So this exists,
+ * off by default, and flip_eyes_y in gevr.ini turns it on when the world
+ * turns out to be upside down -- without a rebuild.
+ *
+ * Out to scratch and back, because a blit whose source and destination
+ * rectangles overlap within one framebuffer is undefined. The return leg
+ * reverses the destination's Y, and that is the flip.
+ */
+static GLuint s_flip_fbo, s_flip_rb;
+static int    s_flip_w, s_flip_h;
+
+void gevr_gl_flip_target(unsigned fbo, int width, int height)
+{
+    if (!s_ready || !fbo || width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (s_flip_w != width || s_flip_h != height) {
+        if (!s_flip_fbo) { p_glGenFramebuffers(1, &s_flip_fbo); }
+        if (!s_flip_rb)  { p_glGenRenderbuffers(1, &s_flip_rb); }
+
+        p_glBindRenderbuffer(GL_RENDERBUFFER, s_flip_rb);
+        p_glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
+        p_glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        p_glBindFramebuffer(GL_FRAMEBUFFER, s_flip_fbo);
+        p_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                    GL_RENDERBUFFER, s_flip_rb);
+        if (p_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            snprintf(s_error, sizeof(s_error),
+                     "flip scratch incomplete at %dx%d", width, height);
+            p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            s_flip_w = 0;
+            s_flip_h = 0;
+            return;
+        }
+        p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        s_flip_w = width;
+        s_flip_h = height;
+    }
+
+    p_glDisable(GL_SCISSOR_TEST);
+
+    p_glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    p_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s_flip_fbo);
+    p_glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    p_glBindFramebuffer(GL_READ_FRAMEBUFFER, s_flip_fbo);
+    p_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    p_glBlitFramebuffer(0, 0, width, height, 0, height, width, 0,
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
     p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -598,6 +695,11 @@ void gevr_gl_shutdown(void)
         p_glDeleteFramebuffers(1, &f);
     }
     s_fbo_count = 0;
+
+    if (s_flip_fbo) { p_glDeleteFramebuffers(1, &s_flip_fbo);  s_flip_fbo = 0; }
+    if (s_flip_rb)  { p_glDeleteRenderbuffers(1, &s_flip_rb);  s_flip_rb = 0; }
+    s_flip_w = 0;
+    s_flip_h = 0;
 
     if (s_vig_prog)   { p_glDeleteProgram(s_vig_prog);   s_vig_prog = 0; }
     if (s_quad_prog)  { p_glDeleteProgram(s_quad_prog);  s_quad_prog = 0; }

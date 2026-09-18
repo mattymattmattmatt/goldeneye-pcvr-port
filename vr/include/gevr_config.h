@@ -99,6 +99,14 @@ typedef struct gevr_config {
     float hud_distance;       /* metres in front of the head */
     float hud_scale;
     int   mirror_window;      /* show a flat mirror on the desktop */
+    int   flip_eyes_y;        /* turn each eye upside down before handing it to
+                               * the compositor. OpenGL's framebuffer origin is
+                               * bottom-left and most PC runtimes composite in
+                               * Direct3D, whose origin is top-left; whether a
+                               * given runtime's interop accounts for that is
+                               * not something the API lets you ask. Off by
+                               * default -- turn it on if the world is upside
+                               * down in the headset. */
 
     /* ---- misc ---- */
     int   swap_sticks;        /* left/right thumbstick roles */
