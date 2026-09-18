@@ -40,8 +40,17 @@ struct GfxStereoHooks {
      * hand the finished image to the compositor. begin_eye returns 0 to skip
      * the pass, which is how a lost or throttled runtime declines a frame
      * without the renderer needing to know why.
+     *
+     * On success begin_eye reports the target's pixel size through out_w and
+     * out_h, and the renderer scales the frame to it for the duration of the
+     * pass. It has to: the viewport and scissor the game asks for are in N64
+     * coordinates, and fast3d scales them by gfx_current_dimensions, which is
+     * the WINDOW. Left alone, a 640x480 viewport rendered into a 2688x2880
+     * eye lands in a corner of it about a third of the way across, and the
+     * rest of what the headset displays is the clear colour -- which looks,
+     * convincingly, like the game never drew anything at all.
      */
-    int  (*begin_eye)(int eye);
+    int  (*begin_eye)(int eye, int *out_w, int *out_h);
     void (*end_eye)(int eye);
 
     /*

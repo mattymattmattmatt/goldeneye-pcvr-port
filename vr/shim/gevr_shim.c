@@ -314,7 +314,7 @@ int gevr_shim_alternate_eyes(void)
     return g_vr.cfg.alternate_eyes ? 1 : 0;
 }
 
-int gevr_shim_begin_eye_target(int eye)
+int gevr_shim_begin_eye_target(int eye, int *out_w, int *out_h)
 {
     gevr_eye_target t;
     unsigned fbo;
@@ -338,6 +338,12 @@ int gevr_shim_begin_eye_target(int eye)
     gevr_gl_bind_framebuffer(fbo, t.width, t.height);
     g_vr.eye_target[eye] = t;
     g_vr.current_eye = eye;
+
+    /* The renderer scales the frame to this, and it is not the window size.
+     * Without it the game draws a window-sized image into one corner of the
+     * eye and the headset shows mostly clear colour. */
+    if (out_w) { *out_w = t.width; }
+    if (out_h) { *out_h = t.height; }
     return 1;
 }
 
@@ -445,6 +451,38 @@ void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx)
          * yet; the hook leaves the game's own projection alone in that case. */
         ctx->eye[e].valid = (fov[1] > fov[0]) && (fov[2] > fov[3]);
     }
+}
+
+/*
+ * A line for the log describing why the headset is or is not showing anything.
+ *
+ * The renderer-side facts and the runtime-side ones both matter and neither is
+ * visible from the other: the runtime can be perfectly happy while the eye
+ * passes are being skipped, and the passes can run while the runtime discards
+ * every layer. Both ends go on one line.
+ */
+void gevr_shim_debug_line(char *buf, int len)
+{
+    char xrline[192];
+    const gevr_eye_target *t;
+
+    if (!buf || len <= 0) {
+        return;
+    }
+    if (!g_vr.active) {
+        snprintf(buf, (size_t)len, "inactive");
+        return;
+    }
+
+    gevr_xr_debug_line(g_vr.xr, xrline, sizeof(xrline));
+    t = &g_vr.eye_target[GEVR_EYE_LEFT];
+
+    snprintf(buf, (size_t)len,
+             "%s | rendering=%d headaim=%d head=%d tex0=%u fbo0=%u %dx%d",
+             xrline, g_vr.rendering, g_vr.headaim_driving,
+             g_vr.head_live_valid, t->gl_texture,
+             gevr_gl_framebuffer_for(t->gl_texture, t->gl_depth),
+             t->width, t->height);
 }
 
 int gevr_shim_get_pads(OSContPad *out, int max)

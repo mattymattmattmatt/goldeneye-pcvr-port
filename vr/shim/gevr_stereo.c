@@ -158,7 +158,7 @@ static int eye_for_pass(int pass)
     return g_ctx->frame_parity & 1;
 }
 
-static int begin_eye(int eye)
+static int begin_eye(int eye, int *out_w, int *out_h)
 {
     if (!g_ctx || !g_ctx->active || eye < 0 || eye >= GEVR_EYE_COUNT) {
         return 0;
@@ -166,7 +166,7 @@ static int begin_eye(int eye)
     if (!g_ctx->begin_eye_cb) {
         return 0;
     }
-    return g_ctx->begin_eye_cb(g_ctx->user, eye);
+    return g_ctx->begin_eye_cb(g_ctx->user, eye, out_w, out_h);
 }
 
 static void end_eye(int eye)

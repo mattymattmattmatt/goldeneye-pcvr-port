@@ -3428,23 +3428,47 @@ extern "C" void gfx_run(Gfx* commands) {
         const int passes = (gfx_stereo && gfx_stereo->pass_count)
                          ? gfx_stereo->pass_count() : 1;
 
+        /*
+         * The eye targets are a different size from the window, and the frame
+         * has to be scaled to whichever one it is being drawn into. Saved here
+         * and restored after the loop so everything outside it -- the present
+         * path below, the mirror, the overlay -- still sees the window.
+         */
+        const struct GfxDimensions saved_dimensions = gfx_current_dimensions;
+        const struct XYWidthHeight saved_viewport = gfx_current_game_window_viewport;
+
         for (int pass = 0; pass < passes; pass++) {
             if (gfx_stereo) {
+                int eye_w = 0;
+                int eye_h = 0;
+
                 gfx_stereo_eye = gfx_stereo->eye_for_pass
                                ? gfx_stereo->eye_for_pass(pass) : pass;
-                if (gfx_stereo->begin_eye && !gfx_stereo->begin_eye(gfx_stereo_eye)) {
+                if (gfx_stereo->begin_eye &&
+                    !gfx_stereo->begin_eye(gfx_stereo_eye, &eye_w, &eye_h)) {
                     continue;   /* runtime declined this eye */
                 }
-                if (pass > 0) {
-                    /* Second and later passes start from the state the
-                     * previous walk left. Reset what gfx_run itself resets at
-                     * entry, so each eye sees the same starting point as the
-                     * first -- the replay probe covers exactly this. */
-                    gfx_sp_reset();
-                    rdp.viewport_or_scissor_changed = true;
-                    rendering_state.viewport = {};
-                    rendering_state.scissor = {};
+
+                /* Scale the frame to this eye. RATIO_X/RATIO_Y, and with them
+                 * every viewport and scissor the display list sets, are
+                 * derived from gfx_current_dimensions. */
+                if (eye_w > 0 && eye_h > 0) {
+                    gfx_current_dimensions.width = (uint32_t)eye_w;
+                    gfx_current_dimensions.height = (uint32_t)eye_h;
+                    gfx_current_dimensions.aspect_ratio = (float)eye_w / (float)eye_h;
+                    gfx_current_game_window_viewport.width = eye_w;
+                    gfx_current_game_window_viewport.height = eye_h;
                 }
+
+                /* Each pass starts from the state the previous walk left, and
+                 * the first one starts from a frame drawn at window size, so
+                 * the reset is unconditional here rather than pass > 0. Resets
+                 * what gfx_run itself resets at entry -- the replay probe
+                 * covers exactly this. */
+                gfx_sp_reset();
+                rdp.viewport_or_scissor_changed = true;
+                rendering_state.viewport = {};
+                rendering_state.scissor = {};
             }
 
             gfx_run_dl(commands);
@@ -3461,6 +3485,8 @@ extern "C" void gfx_run(Gfx* commands) {
             }
         }
         gfx_stereo_eye = 0;
+        gfx_current_dimensions = saved_dimensions;
+        gfx_current_game_window_viewport = saved_viewport;
     }
     gfxFramebuffer = 0;
 

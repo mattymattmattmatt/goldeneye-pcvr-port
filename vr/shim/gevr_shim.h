@@ -91,7 +91,7 @@ int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg);
  * symmetric approximation shears the world toward the nose.
  */
 struct gevr_stereo_ctx;
-int  gevr_shim_begin_eye_target(int eye);
+int  gevr_shim_begin_eye_target(int eye, int *out_w, int *out_h);
 void gevr_shim_end_eye_target(int eye);
 void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx);
 int  gevr_shim_alternate_eyes(void);
@@ -100,6 +100,10 @@ int  gevr_shim_current_eye(void);
 /* Blits one eye onto the desktop window, so the monitor shows what the player
  * sees rather than the empty framebuffer the eye passes left behind. */
 void gevr_shim_blit_mirror(void);
+
+/* One line for the log: session state, whether the runtime wants a render,
+ * and what the eye passes actually bound. */
+void gevr_shim_debug_line(char *buf, int len);
 
 /*
  * Positional (6DoF) tracking is not exposed here.
@@ -133,12 +137,13 @@ void gevr_shim_blit_mirror(void);
 #define gevr_shim_frame_end()       ((void)0)
 #define gevr_shim_get_pads(o, n)    (0)
 #define gevr_shim_head_aim(t, v)    (0)
-#define gevr_shim_begin_eye_target(e)  (0)
+#define gevr_shim_begin_eye_target(e, w, h)  (0)
 #define gevr_shim_end_eye_target(e)    ((void)0)
 #define gevr_shim_publish_eyes(c)      ((void)0)
 #define gevr_shim_alternate_eyes()     (0)
 #define gevr_shim_current_eye()        (0)
 #define gevr_shim_blit_mirror()        ((void)0)
+#define gevr_shim_debug_line(b, n)     ((void)0)
 
 #endif /* GE_VR */
 

@@ -30,8 +30,13 @@ static int g_eyes_drawn[2];
 static int probe_pass_count(void) { return 2; }
 static int probe_eye_for_pass(int p) { return p; }
 
-static int probe_begin_eye(int eye)
+static int probe_begin_eye(int eye, int *out_w, int *out_h)
 {
+    /* The probe draws into the window, not a headset target, so it leaves the
+     * frame at the size the renderer already had. */
+    (void)out_w;
+    (void)out_h;
+
     if (eye >= 0 && eye < 2) {
         g_eyes_drawn[eye]++;
         /* Bounded: enough to see both eyes running on the first few frames

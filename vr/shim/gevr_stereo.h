@@ -33,7 +33,9 @@ typedef struct gevr_stereo_ctx {
 
     /* Binding a swapchain image is the XR layer's job, not this file's. */
     void *user;
-    int  (*begin_eye_cb)(void *user, int eye);
+    /* Reports the eye target's pixel size through out_w/out_h on success, so
+     * the renderer can scale the frame to it; see gfx_stereo.h. */
+    int  (*begin_eye_cb)(void *user, int eye, int *out_w, int *out_h);
     void (*end_eye_cb)(void *user, int eye);
 } gevr_stereo_ctx;
 

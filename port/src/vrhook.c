@@ -42,16 +42,62 @@ void vrHookShutdown(void);
 static gevr_stereo_ctx g_stereo;
 static int g_up;
 
-static int stereo_begin_eye(void *user, int eye)
+/*
+ * Shutdown handshake with the host's quit path.
+ *
+ * The host quits by calling exit(0) from its event thread, which tears the
+ * window and the GL context down under the render thread. If that thread is
+ * inside xrEndFrame at the time, the runtime is left submitting against a
+ * context that is being destroyed, and it blocks there for good -- which is
+ * what happened on the first run that got this far: the game closed, and
+ * shedThread never came back out of xrEndFrame.
+ *
+ * So the quit path asks first (vrHookRequestStop), and waits for the render
+ * thread to finish whatever frame it is in (vrHookBusy) before exiting.
+ * volatile rather than atomic to match the rest of this port's cross-thread
+ * flags; these are single ints written by one thread and polled by another.
+ */
+static volatile int g_stopping;
+static volatile int g_in_frame;
+
+static int stereo_begin_eye(void *user, int eye, int *out_w, int *out_h)
 {
     (void)user;
-    return gevr_shim_begin_eye_target(eye);
+    return gevr_shim_begin_eye_target(eye, out_w, out_h);
 }
 
 static void stereo_end_eye(void *user, int eye)
 {
     (void)user;
     gevr_shim_end_eye_target(eye);
+}
+#endif
+
+#ifdef GE_VR
+/*
+ * Logs what the runtime and the renderer are each doing, for the first few
+ * frames and then only when it changes.
+ *
+ * Deliberately not gated behind an env var. The failure this exists for --
+ * frames rendering happily into a headset that shows nothing -- gives no other
+ * outward sign, and asking someone to reproduce it a second time with tracing
+ * switched on costs more than these lines do.
+ */
+static void vrTraceFrame(void)
+{
+    static char prev[256];
+    static int frames;
+    char now[256];
+
+    gevr_shim_debug_line(now, (int)sizeof(now));
+
+    if (frames < 5 || strcmp(now, prev) != 0) {
+        sysLogPrintf(LOG_NOTE, "VR: %s", now);
+        memcpy(prev, now, sizeof(prev));
+    }
+    if (frames < 1000) {
+        frames++;
+    }
 }
 #endif
 
@@ -95,6 +141,11 @@ void vrHookFrameBegin(void)
      * The eye poses come from xrLocateViews, which gevr_xr_begin_frame has
      * just done, so they are available before the first eye is acquired.
      */
+    if (g_stopping) {
+        return;
+    }
+    g_in_frame = 1;
+
     gevr_shim_frame_begin();
 
     /*
@@ -111,10 +162,12 @@ void vrHookFrameBegin(void)
     if (!gevr_shim_active()) {
         sysLogPrintf(LOG_NOTE, "VR: runtime gone; falling back to flat.");
         vrHookShutdown();
+        g_in_frame = 0;
         return;
     }
 
     gevr_shim_publish_eyes(&g_stereo);
+    vrTraceFrame();
 #endif
 }
 
@@ -149,6 +202,25 @@ void vrHookFrameEnd(void)
     }
     gevr_shim_frame_end();
     g_stereo.frame_parity++;
+    g_in_frame = 0;
+#endif
+}
+
+/* Asks the VR layer to stop opening frames. Safe from any thread. */
+void vrHookRequestStop(void)
+{
+#ifdef GE_VR
+    g_stopping = 1;
+#endif
+}
+
+/* Whether the render thread is currently inside an XR frame. */
+int vrHookBusy(void)
+{
+#ifdef GE_VR
+    return g_in_frame;
+#else
+    return 0;
 #endif
 }
 

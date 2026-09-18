@@ -469,7 +469,11 @@ int main(void)
     struct Cb {
         static int  pass_count(void) { return 2; }
         static int  eye_for_pass(int p) { return p; }
-        static int  begin_eye(int eye) { s_begin[eye]++; return 1; }
+        static int  begin_eye(int eye, int *w, int *h) {
+            (void)w; (void)h;   /* recording backend; size is irrelevant */
+            s_begin[eye]++;
+            return 1;
+        }
         static void end_eye(int eye) { s_end[eye]++; }
         static void adjust_projection(int eye, float m[4][4]) {
             s_adjust[eye]++;

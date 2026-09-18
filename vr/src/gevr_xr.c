@@ -82,6 +82,11 @@ struct gevr_xr {
      */
     XrTime           input_display_time;
 
+    /* Last result from each frame-scoped call, kept for the diagnostic line.
+     * These used to be discarded, which is why a runtime refusing our frames
+     * looked from the outside exactly like a runtime accepting them. */
+    XrResult         r_wait, r_begin, r_end, r_acquire;
+
     /* ---- input ---- */
     XrActionSet      action_set;
     XrAction         a_move, a_turn;
@@ -1164,13 +1169,15 @@ gevr_frame_status gevr_xr_begin_frame(gevr_xr *xr, gevr_input_state *in)
     memset(&xr->frame_state, 0, sizeof(xr->frame_state));
     xr->frame_state.type = XR_TYPE_FRAME_STATE;
 
-    if (XR_FAILED(xrWaitFrame(xr->session, &wi, &xr->frame_state))) {
+    xr->r_wait = xrWaitFrame(xr->session, &wi, &xr->frame_state);
+    if (XR_FAILED(xr->r_wait)) {
         return GEVR_FRAME_SKIP;
     }
 
     memset(&bi, 0, sizeof(bi));
     bi.type = XR_TYPE_FRAME_BEGIN_INFO;
-    if (XR_FAILED(xrBeginFrame(xr->session, &bi))) {
+    xr->r_begin = xrBeginFrame(xr->session, &bi);
+    if (XR_FAILED(xr->r_begin)) {
         return GEVR_FRAME_SKIP;
     }
 
@@ -1343,7 +1350,8 @@ int gevr_xr_acquire_eye(gevr_xr *xr, int eye, gevr_eye_target *out)
 
     memset(&ai, 0, sizeof(ai));
     ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-    if (XR_FAILED(xrAcquireSwapchainImage(sc->handle, &ai, &sc->acquired_index))) {
+    xr->r_acquire = xrAcquireSwapchainImage(sc->handle, &ai, &sc->acquired_index);
+    if (XR_FAILED(xr->r_acquire)) {
         return -1;
     }
 
@@ -1434,8 +1442,50 @@ void gevr_xr_end_frame(gevr_xr *xr)
         ei.layers = NULL;
     }
 
-    xrEndFrame(xr->session, &ei);
+    xr->r_end = xrEndFrame(xr->session, &ei);
     xr->frame_active = 0;
+}
+
+static const char *session_state_name(XrSessionState st)
+{
+    switch (st) {
+    case XR_SESSION_STATE_IDLE:         return "IDLE";
+    case XR_SESSION_STATE_READY:        return "READY";
+    case XR_SESSION_STATE_SYNCHRONIZED: return "SYNCHRONIZED";
+    case XR_SESSION_STATE_VISIBLE:      return "VISIBLE";
+    case XR_SESSION_STATE_FOCUSED:      return "FOCUSED";
+    case XR_SESSION_STATE_STOPPING:     return "STOPPING";
+    case XR_SESSION_STATE_LOSS_PENDING: return "LOSS_PENDING";
+    case XR_SESSION_STATE_EXITING:      return "EXITING";
+    default:                            return "UNKNOWN";
+    }
+}
+
+/*
+ * One line describing what the runtime is actually doing with our frames.
+ *
+ * Exists because a headset showing nothing is otherwise indistinguishable
+ * from a headset showing something: the game renders, the frame counter
+ * climbs, and every clue about why the compositor has no image is inside
+ * result codes and state flags that nothing printed.
+ */
+void gevr_xr_debug_line(const gevr_xr *xr, char *buf, size_t len)
+{
+    if (!buf || len == 0) {
+        return;
+    }
+    if (!xr) {
+        snprintf(buf, len, "no session");
+        return;
+    }
+    snprintf(buf, len,
+             "state=%s running=%d shouldRender=%d views=%d "
+             "eye=%dx%d wait=%d begin=%d acq=%d end=%d",
+             session_state_name(xr->state), xr->session_running,
+             xr->should_render, xr->views_valid,
+             xr->rec_width, xr->rec_height,
+             (int)xr->r_wait, (int)xr->r_begin,
+             (int)xr->r_acquire, (int)xr->r_end);
 }
 
 void gevr_xr_haptics(gevr_xr *xr, const gevr_haptic_request *req)

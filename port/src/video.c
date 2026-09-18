@@ -376,6 +376,9 @@ static volatile int screenshotReq = 0;
 
 /* Pre-swap capture hook (defined below, registered in videoInit). */
 static void videoPreSwapCapture(void);
+/* Quit handshake with the VR layer (defined below, called from the event
+ * pump above it). */
+static void videoStopVR(void);
 extern void (*gfx_pre_swap_hook)(void);
 static double fpsWindowStart = 0.0;
 static int fpsNumFrames = 0;
@@ -556,6 +559,7 @@ void videoPumpEvents(void)
         switch (ev.type) {
         case SDL_QUIT:
             sysLogPrintf(LOG_INFO, "video: quit requested");
+            videoStopVR();
             exit(0);
             break;
         case SDL_KEYDOWN:
@@ -567,6 +571,7 @@ void videoPumpEvents(void)
              * Alt+F4 only. */
             if ((ev.key.keysym.sym == SDLK_F4) && (ev.key.keysym.mod & KMOD_ALT)) {
                 sysLogPrintf(LOG_INFO, "video: Alt+F4 -> quit");
+                videoStopVR();
                 exit(0);
             } else if (ev.key.keysym.sym == SDLK_F12 && !ev.key.repeat) {
                 screenshotReq = 1;
@@ -605,6 +610,7 @@ void videoPumpEvents(void)
         case SDL_WINDOWEVENT:
             if (ev.window.event == SDL_WINDOWEVENT_CLOSE) {
                 sysLogPrintf(LOG_INFO, "video: window closed");
+                videoStopVR();
                 exit(0);
             } else if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                 gfx_sdl_update_cached_size();
@@ -638,6 +644,36 @@ void videoSubmitCommands(Gfx *cmds)
         return;
     }
     gfx_run(cmds);
+}
+
+/*
+ * Let the VR layer finish the frame it is in before the process goes away.
+ *
+ * Quitting here calls exit(0) on this thread, which tears down the window and
+ * the GL context while the scheduler thread may be inside xrEndFrame --
+ * submitting to a compositor against a context being destroyed. That does not
+ * fail, it blocks: the first run that survived the frame loop hung on exactly
+ * this, with shedThread stuck in xrEndFrame after the window closed.
+ *
+ * Bounded, because a wait that can hang is not an improvement on a hang.
+ */
+static void videoStopVR(void)
+{
+#ifdef GE_VR
+    extern void vrHookRequestStop(void);
+    extern int  vrHookBusy(void);
+    int waited = 0;
+
+    vrHookRequestStop();
+    while (vrHookBusy() && waited < 250) {
+        SDL_Delay(1);
+        waited++;
+    }
+    if (waited >= 250) {
+        sysLogPrintf(LOG_WARNING,
+                     "video: VR frame still in flight after 250 ms; exiting anyway");
+    }
+#endif
 }
 
 /* Runs from gfx_sdl_swap_buffers_begin with the composited frame still in the

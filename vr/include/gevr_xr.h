@@ -16,6 +16,8 @@
 #include "gevr_input.h"
 #include "gevr_math.h"
 
+#include <stddef.h>   /* size_t */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -103,6 +105,10 @@ long long gevr_xr_predicted_display_time(const gevr_xr *xr);
 
 /* Recommended per-eye render size, after cfg->render_scale. */
 void gevr_xr_recommended_size(const gevr_xr *xr, int *w, int *h);
+
+/* One line of diagnostics: session state, whether the runtime asked for a
+ * render, and the last result from each frame-scoped call. */
+void gevr_xr_debug_line(const gevr_xr *xr, char *buf, size_t len);
 
 /* True once the runtime reports a stage (roomscale) space is available. */
 int  gevr_xr_has_stage_space(const gevr_xr *xr);
