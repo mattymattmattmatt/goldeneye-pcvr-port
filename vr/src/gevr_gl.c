@@ -125,6 +125,21 @@ const char *gevr_gl_last_error(void)
     return s_error;
 }
 
+/*
+ * Every failure path says why, including this one.
+ *
+ * Returning 0 silently is what hid a black screen for a whole test cycle: the
+ * caller printed gevr_gl_last_error() and got an empty string, so the one
+ * failure that had no message looked like the one failure that could not
+ * happen. A "not ready" that names itself is worth the two lines.
+ */
+static int not_ready(const char *what)
+{
+    snprintf(s_error, sizeof(s_error),
+             "%s before gevr_gl_init succeeded", what);
+    return 0;
+}
+
 int gevr_gl_init(void)
 {
     s_error[0] = '\0';
@@ -161,7 +176,7 @@ unsigned gevr_gl_create_depth(int width, int height)
     GLuint rb = 0;
 
     if (!s_ready) {
-        return 0;
+        return (unsigned)not_ready("create_depth");
     }
     p_glGenRenderbuffers(1, &rb);
     p_glBindRenderbuffer(GL_RENDERBUFFER, rb);
@@ -184,7 +199,7 @@ unsigned gevr_gl_framebuffer_for(unsigned color_tex, unsigned depth_rb)
     int i;
 
     if (!s_ready) {
-        return 0;
+        return (unsigned)not_ready("framebuffer_for");
     }
 
     for (i = 0; i < s_fbo_count; i++) {

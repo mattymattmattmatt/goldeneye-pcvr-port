@@ -96,6 +96,12 @@ static struct {
      * swapchain image, or the framebuffer came back incomplete. Three
      * counters and one error string separate those, so the next run names
      * the failure instead of narrowing it.
+     *
+     * Counted per frame, not cumulatively. A running total changes on every
+     * frame, which defeats the log's print-on-change filter and buries the
+     * one line that matters under thousands of identical ones; a per-frame
+     * count is steady while the situation is steady, and reads directly as
+     * "two eyes attempted, neither drawn".
      */
     unsigned         n_eye_call;   /* begin_eye_target entered          */
     unsigned         n_eye_acqf;   /* xrAcquireSwapchainImage refused   */
@@ -212,6 +218,12 @@ void gevr_shim_frame_begin(void)
         return;
     }
     g_vr.frame_open = 1;
+
+    g_vr.n_eye_call = 0;
+    g_vr.n_eye_acqf = 0;
+    g_vr.n_eye_fbof = 0;
+    g_vr.n_eye_ok = 0;
+    g_vr.eye_err[0] = '\0';
 
     st = gevr_xr_poll(g_vr.xr);
     if (st == GEVR_FRAME_EXIT) {

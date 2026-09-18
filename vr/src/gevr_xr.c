@@ -333,6 +333,27 @@ static int get_system(gevr_xr *xr)
 
 /* ------------------------------------------------------------- graphics */
 
+/*
+ * Resolve gevr_gl's entry points. Both paths need this, including the one that
+ * borrows the game's context: sharing a context does not share function
+ * pointers, and everything gevr_gl draws through is NULL until this runs. It
+ * used to sit only in the branch that creates its own window, which left the
+ * integrated build with gevr_gl permanently not-ready -- every framebuffer and
+ * depth buffer it was asked for came back as 0, so both eyes had nothing to
+ * render into and the headset stayed black.
+ *
+ * A context must be current on this thread, which both callers have just
+ * established: on Windows wglGetProcAddress returns NULL without one.
+ */
+static int finish_gl_context(gevr_xr *xr)
+{
+    if (gevr_gl_init() != 0) {
+        set_error(xr, "GL init failed: %s", gevr_gl_last_error());
+        return -1;
+    }
+    return 0;
+}
+
 static int create_gl_context(gevr_xr *xr, const gevr_xr_desc *desc)
 {
     if (!desc || !desc->create_window) {
@@ -343,7 +364,7 @@ static int create_gl_context(gevr_xr *xr, const gevr_xr_desc *desc)
             set_error(xr, "create_window was 0 but no GL context is current");
             return -1;
         }
-        return 0;
+        return finish_gl_context(xr);
     }
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -377,11 +398,7 @@ static int create_gl_context(gevr_xr *xr, const gevr_xr_desc *desc)
     /* The compositor paces us; a swap interval here would double-throttle. */
     SDL_GL_SetSwapInterval(0);
 
-    if (gevr_gl_init() != 0) {
-        set_error(xr, "GL init failed: %s", gevr_gl_last_error());
-        return -1;
-    }
-    return 0;
+    return finish_gl_context(xr);
 }
 
 static int create_session(gevr_xr *xr)

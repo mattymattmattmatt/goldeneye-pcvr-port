@@ -3460,6 +3460,17 @@ extern "C" void gfx_run(Gfx* commands) {
                     gfx_current_game_window_viewport.height = eye_h;
                 }
 
+                /* The clear above this loop landed on whichever target was
+                 * bound then, which is never an eye: begin_eye binds the
+                 * swapchain image afterwards. So clear here too, or the eye
+                 * starts the frame holding whatever the runtime last handed
+                 * back -- an older frame's image, with its depth buffer, three
+                 * images ago. Going through the rendering API rather than
+                 * glClear keeps the scissor and depth-mask handling, and the
+                 * depth-mask restore, that fast3d's own state tracking
+                 * assumes. */
+                gfx_rapi->clear_framebuffer(true, true);
+
                 /* Each pass starts from the state the previous walk left, and
                  * the first one starts from a frame drawn at window size, so
                  * the reset is unconditional here rather than pass > 0. Resets
