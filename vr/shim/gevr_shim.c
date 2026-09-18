@@ -87,6 +87,21 @@ static struct {
      * render thread; a single int, and a frame either way is harmless.
      */
     int              headaim_driving;
+
+    /*
+     * Where the eye pass gets to, counted rather than inferred.
+     *
+     * The first trace said only that the eye targets were empty, which is
+     * true whether the pass was never called, the runtime refused the
+     * swapchain image, or the framebuffer came back incomplete. Three
+     * counters and one error string separate those, so the next run names
+     * the failure instead of narrowing it.
+     */
+    unsigned         n_eye_call;   /* begin_eye_target entered          */
+    unsigned         n_eye_acqf;   /* xrAcquireSwapchainImage refused   */
+    unsigned         n_eye_fbof;   /* no usable framebuffer for the tex */
+    unsigned         n_eye_ok;     /* bound, and the eye was drawn      */
+    char             eye_err[128];
 } g_vr;
 
 int gevr_shim_active(void)
@@ -322,7 +337,12 @@ int gevr_shim_begin_eye_target(int eye, int *out_w, int *out_h)
     if (!g_vr.active || !g_vr.rendering || eye < 0 || eye >= GEVR_EYE_COUNT) {
         return 0;
     }
+    g_vr.n_eye_call++;
+
     if (gevr_xr_acquire_eye(g_vr.xr, eye, &t) != 0) {
+        g_vr.n_eye_acqf++;
+        snprintf(g_vr.eye_err, sizeof(g_vr.eye_err), "acquire: %s",
+                 gevr_xr_last_error(g_vr.xr));
         return 0;
     }
 
@@ -331,6 +351,9 @@ int gevr_shim_begin_eye_target(int eye, int *out_w, int *out_h)
         /* Acquired but unusable: release it again rather than leaving the
          * swapchain image checked out, which would wedge the runtime on the
          * next frame. */
+        g_vr.n_eye_fbof++;
+        snprintf(g_vr.eye_err, sizeof(g_vr.eye_err), "fbo: %s (tex=%u depth=%u)",
+                 gevr_gl_last_error(), t.gl_texture, t.gl_depth);
         gevr_xr_release_eye(g_vr.xr, eye);
         return 0;
     }
@@ -344,6 +367,7 @@ int gevr_shim_begin_eye_target(int eye, int *out_w, int *out_h)
      * eye and the headset shows mostly clear colour. */
     if (out_w) { *out_w = t.width; }
     if (out_h) { *out_h = t.height; }
+    g_vr.n_eye_ok++;
     return 1;
 }
 
@@ -478,11 +502,13 @@ void gevr_shim_debug_line(char *buf, int len)
     t = &g_vr.eye_target[GEVR_EYE_LEFT];
 
     snprintf(buf, (size_t)len,
-             "%s | rendering=%d headaim=%d head=%d tex0=%u fbo0=%u %dx%d",
+             "%s | rendering=%d headaim=%d head=%d tex0=%u %dx%d "
+             "| eye call=%u ok=%u acqfail=%u fbofail=%u%s%s",
              xrline, g_vr.rendering, g_vr.headaim_driving,
-             g_vr.head_live_valid, t->gl_texture,
-             gevr_gl_framebuffer_for(t->gl_texture, t->gl_depth),
-             t->width, t->height);
+             g_vr.head_live_valid, t->gl_texture, t->width, t->height,
+             g_vr.n_eye_call, g_vr.n_eye_ok,
+             g_vr.n_eye_acqf, g_vr.n_eye_fbof,
+             g_vr.eye_err[0] ? " | " : "", g_vr.eye_err);
 }
 
 int gevr_shim_get_pads(OSContPad *out, int max)

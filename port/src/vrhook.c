@@ -167,7 +167,6 @@ void vrHookFrameBegin(void)
     }
 
     gevr_shim_publish_eyes(&g_stereo);
-    vrTraceFrame();
 #endif
 }
 
@@ -203,6 +202,11 @@ void vrHookFrameEnd(void)
     gevr_shim_frame_end();
     g_stereo.frame_parity++;
     g_in_frame = 0;
+
+    /* After the walk, so it reports the frame that just rendered rather than
+     * the one before it -- which is what made the first trace read as though
+     * the eye targets were permanently empty. */
+    vrTraceFrame();
 #endif
 }
 
