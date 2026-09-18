@@ -11,10 +11,17 @@
  *   - confirming the headset and both controllers are seen by the runtime
  *   - feeling the Goodhead twin-stick mapping and tuning snap/deadzone/gain
  *   - measuring world_scale: walk a known number of grid squares and compare
- *   - proving the head servo tracks without judder on your actual hardware
+ *   - proving the runtime, the bindings and positional tracking work at all
  *
  * The stand-in integrator is deliberately simple. It is not the game; it is a
  * consistent target so the control tuning you do here carries over.
+ *
+ * One difference worth knowing before you read anything into the numbers: this
+ * tool still drives its camera through the proportional head servo, which is
+ * how the layer used to steer the engine. The game does not -- it writes the
+ * headset's angles into vv_theta/vv_verta directly (vr/src/gevr_headaim.c), so
+ * there is no servo left to lag. Judder you see here is the servo's; judder in
+ * the game is not.
  */
 #include "gevr_camera.h"
 #include "gevr_config.h"
@@ -117,7 +124,7 @@ static void print_banner(gevr_xr *xr, const gevr_config *cfg)
     printf("  ------------------------------------------------------------\n");
     printf("  left stick  : move (strafe + walk)   -> synthetic pad 1\n");
     printf("  right stick : turn                   -> synthetic pad 0\n");
-    printf("  head        : look (servo drives pad 0 pitch/yaw)\n");
+    printf("  head        : look (servo here; the game aims head-absolute)\n");
     printf("  L trigger   : aim mode   R trigger : fire\n");
     printf("  X           : recenter   Y         : pause\n");
     printf("  ------------------------------------------------------------\n");
@@ -221,6 +228,12 @@ int main(int argc, char **argv)
             break;
         }
 
+        /* Positional tracking is measured from the first pose we see, so that
+         * the lean readout below means something before anyone presses X. */
+        if (in.head_valid) {
+            gevr_camera_capture_origin(&cam, &in.head);
+        }
+
         memset(&game, 0, sizeof(game));
         game.yaw = sim.yaw;
         game.pitch = sim.pitch;
@@ -287,7 +300,8 @@ int main(int argc, char **argv)
          * is covering your eyes; anything faster is unreadable scrollback. */
         if ((frames % 90) == 0) {
             printf("\rhead y/p %6.1f/%6.1f  body %6.1f  pad0 %4d,%4d  "
-                   "pad1 %4d,%4d  sim y %6.1f  pos %7.0f,%7.0f  L[%s] R[%s]",
+                   "pad1 %4d,%4d  sim y %6.1f  pos %7.0f,%7.0f  "
+                   "lean %5.2f m  L[%s] R[%s]",
                    (double)GEVR_RAD2DEG(gevr_quat_yaw_of(in.head.orientation)),
                    (double)GEVR_RAD2DEG(gevr_quat_to_euler(in.head.orientation).pitch),
                    (double)GEVR_RAD2DEG(controls.body_yaw),
@@ -295,6 +309,12 @@ int main(int argc, char **argv)
                    pads[GEVR_PAD_MOVE].stick_x, pads[GEVR_PAD_MOVE].stick_y,
                    (double)GEVR_RAD2DEG(sim.yaw),
                    (double)sim.pos.x, (double)sim.pos.z,
+                   /* How far positional tracking says you have moved from
+                    * where you started. Stays near zero on a 3DoF link and
+                    * follows you on a 6DoF one, which is the quickest way to
+                    * tell the two apart while wearing the headset. */
+                   (double)gevr_v3_len(
+                       gevr_camera_room_offset_local(&cam, &cfg, &in.head)),
                    in.hand_l_valid ? "ok" : "--",
                    in.hand_r_valid ? "ok" : "--");
             fflush(stdout);

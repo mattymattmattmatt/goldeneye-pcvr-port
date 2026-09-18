@@ -67,8 +67,24 @@ const char *gevr_xr_profile_name(const gevr_xr *xr, int hand);
 gevr_frame_status gevr_xr_poll(gevr_xr *xr);
 
 /* Waits on the runtime's frame cadence, syncs actions and locates views.
- * Fills *in with this frame's controller and head state. */
+ * Fills *in with this frame's controller and head state.
+ *
+ * This, gevr_xr_end_frame and the two swapchain calls are the frame-scoped
+ * entry points: they must all run on ONE thread, and it must be the thread
+ * that holds the graphics context the session was created against. Splitting
+ * them across threads deadlocks -- see the comment on gevr_xr_relocate_head. */
 gevr_frame_status gevr_xr_begin_frame(gevr_xr *xr, gevr_input_state *in);
+
+/* Head pose only, predicted to the display time of the frame the game is
+ * building, and safe to call from a thread that owns neither the frame nor the
+ * graphics context. Returns 1 when *out was written. */
+int gevr_xr_relocate_head(gevr_xr *xr, gevr_pose *out);
+
+/* This frame's located pose and frustum for one eye, available as soon as
+ * gevr_xr_begin_frame has returned and without acquiring a swapchain image.
+ * Returns 1 when the view state was valid. */
+int gevr_xr_eye_view(const gevr_xr *xr, int eye, gevr_pose *out_pose,
+                     float out_fov[4]);
 
 /* Acquires the swapchain image for one eye. Returns 0 on success. */
 int  gevr_xr_acquire_eye(gevr_xr *xr, int eye, gevr_eye_target *out);

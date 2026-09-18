@@ -645,6 +645,16 @@ void videoSubmitCommands(Gfx *cmds)
  * the swap is undefined on buffer-exchange drivers (Mesa/WSLg) -> black. */
 static void videoPreSwapCapture(void)
 {
+#ifdef GE_VR
+    /* Put an eye on the desktop window first, so a screenshot or frame dump
+     * captures what the player is actually seeing rather than the untouched
+     * framebuffer the eye passes left behind. */
+    {
+        extern void vrHookMirror(void);
+        vrHookMirror();
+    }
+#endif
+
     /* GE_PCDUMP="first-last" / "first-last:step" -> ./ppm/frame_NNNNNN.ppm.
      * Also honours [Debug] FrameDump in ge007.ini (env var wins). */
     const char *pcdump = configGetFrameDump();

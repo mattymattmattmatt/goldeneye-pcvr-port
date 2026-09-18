@@ -20,6 +20,12 @@ void gevr_config_defaults(gevr_config *cfg)
     cfg->world_scale        = 100.0f;
     cfg->player_height      = 1.75f;
     cfg->ipd_scale          = 1.0f;
+    /* Full 6DoF, clamped to a lean rather than a walk. 0.6 m covers leaning
+     * out of cover and ducking from a chair, which is what a seated player
+     * actually does, without letting someone who stands up and crosses the
+     * room push the camera through a wall. */
+    cfg->room_scale         = 1.0f;
+    cfg->room_limit         = 0.6f;
     cfg->alternate_eyes     = 0;
 
     cfg->turn_mode          = GEVR_TURN_SNAP;
@@ -108,6 +114,8 @@ static const float_field k_float_fields[] = {
     FF(world_scale,       1.0f,   10000.0f),
     FF(player_height,     0.8f,   2.5f),
     FF(ipd_scale,         0.0f,   2.0f),
+    FF(room_scale,        0.0f,   4.0f),
+    FF(room_limit,        0.0f,   5.0f),
     FF(snap_degrees,      5.0f,   90.0f),
     FF(snap_threshold,    0.1f,   1.0f),
     FF(snap_release,      0.0f,   0.95f),

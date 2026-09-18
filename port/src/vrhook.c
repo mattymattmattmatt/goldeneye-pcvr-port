@@ -1,20 +1,25 @@
 /*
  * vrhook.c - brings the VR layer up inside the host port.
  *
- * Three touch points, all no-ops without GE_VR:
+ * Four touch points, all no-ops without GE_VR:
  *
  *   vrHookInit()        after the GL context exists; starts OpenXR and, if it
  *                       comes up, installs the per-eye render seam.
- *   vrHookFrameEnd()    after the frame is presented; closes the XR frame.
+ *   vrHookFrameBegin()  on the render thread, before the display list runs;
+ *                       waits on the compositor and opens the XR frame.
+ *   vrHookMirror()      with the composited frame still in the back buffer,
+ *                       immediately before the desktop swap.
+ *   vrHookFrameEnd()    on the render thread, after the display list; submits
+ *                       the eyes and closes the XR frame.
  *
- * There is deliberately no vrHookFrameBegin. The XR frame is opened lazily by
- * whichever part of the game reaches the VR layer first -- the pad read in
- * joy.c, the head-aim query in MoveBond, or the renderer. That ordering
- * matters: joyPoll runs per frame before the tick and head aim writes
- * vv_theta during MoveBond, so the poses have to be fresh when the GAME reads
- * them. Opening the frame at render time instead would leave every pose one
- * frame behind the input that used it, which is the exact lag head aim exists
- * to remove.
+ * Begin and end are both on the render thread on purpose. An XR frame is a
+ * strictly paired begin/end on the thread holding the graphics context, and
+ * this host binds that context on shedThread only. An earlier version opened
+ * the frame lazily from whichever caller reached the VR layer first, so that
+ * poses were fresh when the game read them rather than when the renderer did;
+ * on real hardware that put xrBeginFrame on mainThread with no context current
+ * and deadlocked after two frames. gevr_xr_relocate_head now covers the
+ * freshness the lazy open was for, without the frame calls.
  *
  * A runtime that fails to start is not fatal. The game carries on flat, which
  * is what someone without a headset plugged in should get.
@@ -30,6 +35,8 @@
 #include "gevr_stereo.h"
 #include "gevr_config.h"
 #endif
+
+void vrHookShutdown(void);
 
 #ifdef GE_VR
 static gevr_stereo_ctx g_stereo;
@@ -70,27 +77,76 @@ void vrHookInit(void)
 #endif
 }
 
+void vrHookFrameBegin(void)
+{
+#ifdef GE_VR
+    if (!g_up) {
+        return;
+    }
+    /*
+     * Wait on the compositor, open the frame, sync actions and locate the
+     * views -- then publish the per-eye state the projection hook will read
+     * during the walk.
+     *
+     * Publishing here rather than from the hook itself is what keeps OpenXR
+     * calls out of the middle of a draw: gfx_run's adjust_projection callback
+     * fires per G_MTX_PROJECTION, inside the list walk.
+     *
+     * The eye poses come from xrLocateViews, which gevr_xr_begin_frame has
+     * just done, so they are available before the first eye is acquired.
+     */
+    gevr_shim_frame_begin();
+
+    /*
+     * If the runtime went away -- headset off the head long enough, Virtual
+     * Desktop disconnected, the session exited -- fall back to flat instead of
+     * to nothing.
+     *
+     * Leaving the seam installed would be worse than useless: pass_count still
+     * asks for two eye passes, begin_eye declines both now that the shim is
+     * inactive, and every pass is skipped. The player gets a black window and
+     * no indication why. Uninstalling restores the single unhooked pass, which
+     * is the flat game.
+     */
+    if (!gevr_shim_active()) {
+        sysLogPrintf(LOG_NOTE, "VR: runtime gone; falling back to flat.");
+        vrHookShutdown();
+        return;
+    }
+
+    gevr_shim_publish_eyes(&g_stereo);
+#endif
+}
+
+void vrHookMirror(void)
+{
+#ifdef GE_VR
+    if (!g_up) {
+        return;
+    }
+    /*
+     * Put an eye on the desktop window.
+     *
+     * Without this the window shows nothing useful once VR is live: the eye
+     * passes render into the swapchain framebuffers, and gfx_run's tail then
+     * presents framebuffer 0, which nothing has drawn into. Someone watching
+     * the monitor would reasonably conclude the game had hung.
+     *
+     * It has to run from the pre-swap hook rather than after gfx_run, because
+     * gfx_run swaps at its own tail (gfx_wapi->swap_buffers_begin). Blitting
+     * afterwards drew into the NEXT frame's back buffer, which the next
+     * gfx_run then cleared -- so the mirror was never once presented.
+     */
+    gevr_shim_blit_mirror();
+#endif
+}
+
 void vrHookFrameEnd(void)
 {
 #ifdef GE_VR
     if (!g_up) {
         return;
     }
-    /* Refresh the per-eye state the projection hook reads, then close the XR
-     * frame. Done here rather than in the hook itself because the hook runs
-     * inside the renderer's list walk, where calling into OpenXR would put
-     * runtime calls in the middle of a draw. */
-    /*
-     * Put an eye on the desktop window before the frame closes.
-     *
-     * Without this the window shows nothing useful once VR is live: the eye
-     * passes render into the swapchain framebuffers, and gfx_run's tail then
-     * presents framebuffer 0, which nothing has drawn into. Someone watching
-     * the monitor would reasonably conclude the game had hung.
-     */
-    gevr_shim_blit_mirror();
-
-    gevr_shim_publish_eyes(&g_stereo);
     gevr_shim_frame_end();
     g_stereo.frame_parity++;
 #endif

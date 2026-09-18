@@ -37,6 +37,16 @@ typedef struct gevr_config {
     float player_height;      /* metres; used when no stage space is available */
     float ipd_scale;          /* 1.0 = true stereo. Lower flattens the world,
                                * which some players prefer at N64 scale. */
+    float room_scale;         /* multiplier on positional (6DoF) head tracking.
+                               * 1.0 = your real lean moves the view by the
+                               * same distance in game units; 0 pins the view
+                               * to the player's position and leaves only
+                               * rotation, which is 3DoF. */
+    float room_limit;         /* metres the view may be displaced from the
+                               * play-space origin before the offset is
+                               * clamped. Stops a player who stands up and
+                               * walks away from putting the camera outside
+                               * the level. 0 disables the clamp. */
     int   alternate_eyes;     /* 1 = draw one eye per frame, alternating, and
                                * leave the other standing in the compositor.
                                * Halves the render cost for a half-frame

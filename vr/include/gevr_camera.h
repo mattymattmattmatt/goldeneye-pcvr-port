@@ -62,6 +62,18 @@ void gevr_camera_init(gevr_camera *cam, const gevr_config *cfg);
  * become the neutral pose. Safe to call mid-level. */
 void gevr_camera_recenter(gevr_camera *cam, const gevr_pose *head, float body_yaw);
 
+/* Adopts the head's current POSITION as the play-space origin, leaving the
+ * heading alone, and only if no origin has been taken yet.
+ *
+ * Positional tracking is measured from that origin, so without it every
+ * offset is relative to wherever the runtime happens to put its own origin --
+ * for a stage space, the floor in the middle of the guardian, which can be a
+ * metre or more from a seated player. Taking it on the first valid pose means
+ * 6DoF is correct from the first frame instead of waiting for the player to
+ * discover the recenter button. Unlike recenter it does not touch body_yaw,
+ * because at start-up the engine has not yet decided which way Bond faces. */
+void gevr_camera_capture_origin(gevr_camera *cam, const gevr_pose *head);
+
 /* Builds one eye. head and eye are in the same reference space; eye_fov comes
  * straight from XrCompositionLayerProjectionView::fov. */
 void gevr_camera_build_eye(const gevr_camera *cam,
@@ -86,6 +98,45 @@ gevr_vec3 gevr_camera_room_offset(const gevr_camera *cam,
 float gevr_camera_crouch_offset(const gevr_camera *cam,
                                 const gevr_config *cfg,
                                 const gevr_pose *head);
+
+/*
+ * Head displacement from the play-space origin, in METRES, expressed in the
+ * head's own frame rather than the world's -- so +x is to the player's right,
+ * +y up, -z the way they are looking, whichever way that is.
+ *
+ * That frame is the one the renderer needs. The per-eye offset is applied as a
+ * translation after the engine's view matrix, and while head aim is driving
+ * the view, the engine's view rotation IS the head's rotation (plus the
+ * stick-accumulated body yaw, which cancels: the same yaw maps tracking space
+ * into world space). So rotating the raw displacement into head-local space is
+ * all that separates a 6DoF offset that tracks the player from one that swings
+ * around the room as they turn their head.
+ *
+ * All three axes are kept, including the vertical: ducking should lower the
+ * view. cfg->room_scale multiplies it and cfg->room_limit clamps its length.
+ */
+gevr_vec3 gevr_camera_room_offset_local(const gevr_camera *cam,
+                                        const gevr_config *cfg,
+                                        const gevr_pose *head);
+
+/*
+ * The whole translation one eye needs, in GAME UNITS and in the head's frame:
+ * the interpupillary offset, plus the 6DoF displacement when `positional` is
+ * set. Ready to be applied after the engine's view matrix.
+ *
+ * `positional` is the caller's answer to "is the headset steering the view
+ * this frame?". When the engine has taken the camera -- a menu, a cutscene, a
+ * control lock -- pass 0. The head-local frame is only the view's frame while
+ * head aim is driving it, and a positional offset applied to a camera pointing
+ * somewhere else reads as the world sliding of its own accord. The eye
+ * separation is left in either way: a few centimetres misaligned is a
+ * negligible stereo error, where tens of game units is not.
+ */
+gevr_vec3 gevr_camera_eye_offset(const gevr_camera *cam,
+                                 const gevr_config *cfg,
+                                 const gevr_pose *head,
+                                 const gevr_pose *eye,
+                                 int positional);
 
 #ifdef __cplusplus
 }

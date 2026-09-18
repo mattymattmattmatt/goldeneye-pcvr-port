@@ -29,6 +29,24 @@ void gevr_camera_recenter(gevr_camera *cam, const gevr_pose *head, float body_ya
     }
 }
 
+void gevr_camera_capture_origin(gevr_camera *cam, const gevr_pose *head)
+{
+    if (!cam || !head || cam->have_origin) {
+        return;
+    }
+
+    cam->recenter_origin = head->position;
+    cam->have_origin = 1;
+
+    /* Only believe a plausible head height. A runtime that has not settled
+     * yet, or a local space whose origin is the headset itself, reports
+     * something near zero; adopting that as the standing height would make
+     * every later crouch reading nonsense. */
+    if (head->position.y > 0.5f && head->position.y < 2.5f) {
+        cam->standing_height = head->position.y;
+    }
+}
+
 /* Head position relative to the recentred play-space origin, in metres,
  * with the vertical component removed (height is handled separately so a
  * crouch does not also translate the camera down twice). */
@@ -68,6 +86,72 @@ float gevr_camera_crouch_offset(const gevr_camera *cam,
         return 0.0f;
     }
     return (head->position.y - cam->standing_height) * cfg->world_scale;
+}
+
+gevr_vec3 gevr_camera_room_offset_local(const gevr_camera *cam,
+                                        const gevr_config *cfg,
+                                        const gevr_pose *head)
+{
+    gevr_vec3 d;
+    float len;
+
+    if (!cam || !cfg || !head || !cam->have_origin || cfg->room_scale <= 0.0f) {
+        return gevr_v3(0.0f, 0.0f, 0.0f);
+    }
+
+    d = gevr_v3_scale(gevr_v3_sub(head->position, cam->recenter_origin),
+                      cfg->room_scale);
+
+    /* Clamp the magnitude, not each axis: clamping per axis would let a
+     * diagonal lean travel further than a straight one, and the corner of a
+     * box is not what "how far may the view leave the player" means. */
+    if (cfg->room_limit > 0.0f) {
+        len = gevr_v3_len(d);
+        if (len > cfg->room_limit) {
+            d = gevr_v3_scale(d, cfg->room_limit / len);
+        }
+    }
+
+    /* World -> head-local. The eye offset is applied after the engine's view
+     * matrix, whose rotation is the head's; see the header. */
+    return gevr_quat_rotate(gevr_quat_conj(gevr_quat_norm(head->orientation)), d);
+}
+
+gevr_vec3 gevr_camera_eye_offset(const gevr_camera *cam,
+                                 const gevr_config *cfg,
+                                 const gevr_pose *head,
+                                 const gevr_pose *eye,
+                                 int positional)
+{
+    gevr_vec3 ipd;
+    gevr_vec3 room;
+
+    if (!cam || !cfg || !head || !eye) {
+        return gevr_v3(0.0f, 0.0f, 0.0f);
+    }
+
+    /*
+     * Eye relative to head, rotated out of tracking space into the head's own
+     * frame. Taking the difference of the two positions rather than assuming a
+     * symmetric IPD means canted displays -- Pimax, and the Quest's own slight
+     * cant -- come out right for free.
+     *
+     * The rotation is the part that is easy to leave out and expensive to
+     * omit: without it the separation is stated in tracking space and used as
+     * though it were view space, so turning your head swings the stereo
+     * baseline around until, at ninety degrees, it points down the view
+     * direction and the stereo collapses.
+     */
+    ipd = gevr_quat_rotate(gevr_quat_conj(gevr_quat_norm(head->orientation)),
+                           gevr_v3_sub(eye->position, head->position));
+    ipd = gevr_v3_scale(ipd, cfg->ipd_scale);
+
+    room = positional ? gevr_camera_room_offset_local(cam, cfg, head)
+                      : gevr_v3(0.0f, 0.0f, 0.0f);
+
+    /* Metres -> game units, once, on the sum: ipd_scale and room_scale have
+     * already had their say and world_scale is what the two share. */
+    return gevr_v3_scale(gevr_v3_add(ipd, room), cfg->world_scale);
 }
 
 void gevr_camera_build_eye(const gevr_camera *cam,

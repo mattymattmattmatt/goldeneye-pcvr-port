@@ -50,14 +50,43 @@ static struct {
     gevr_headaim_state headaim;
     gevr_headaim_params headaim_p;
 
+    /*
+     * Written whole by the render thread at frame begin and read by both
+     * threads. gevr_xr_begin_frame clears its output before refilling it, so
+     * it is given a staging copy and this is assigned once, complete -- a game
+     * thread reading mid-frame then sees one frame's input or the next, never
+     * the zeroed gap in between, which would have read as tracking loss.
+     */
     gevr_input_state input;
-    gevr_eye_view    eye_view[GEVR_EYE_COUNT];
+
+    /*
+     * The game thread's own, fresher head pose (see refresh_head). Kept apart
+     * from `input` so the two threads never write the same bytes: the render
+     * thread owns `input`, the game thread owns this.
+     */
+    gevr_pose        head_live;
+    int              head_live_valid;
+
     gevr_eye_target  eye_target[GEVR_EYE_COUNT];
 
     int              active;
     int              rendering;
     int              frame_open;   /* xrWaitFrame done for this game frame */
     int              current_eye;
+
+    /*
+     * Whether head aim wrote the engine's view angles on the most recent
+     * game tick.
+     *
+     * The per-eye offset published to the renderer assumes the engine's view
+     * rotation is the headset's, which is only true while head aim is driving
+     * it. During menus, cutscenes and control locks the engine owns the camera
+     * and the two diverge, so the 6DoF translation is withheld -- a positional
+     * offset applied against a camera pointing somewhere else is the one that
+     * actually makes people ill. Written on the game thread, read on the
+     * render thread; a single int, and a frame either way is harmless.
+     */
+    int              headaim_driving;
 } g_vr;
 
 int gevr_shim_active(void)
@@ -136,19 +165,31 @@ static void read_game_state(gevr_game_state *game)
 }
 
 /*
- * Opening the frame is idempotent and can be triggered from either end.
+ * The XR frame lifecycle lives on ONE thread: the renderer's.
  *
- * The poses have to be fresh when the GAME reads them, not when the renderer
- * does: joyPoll runs per frame before the tick, head aim writes vv_theta
- * during MoveBond, and the display list is built from that. If the frame were
- * only opened at render time, every pose would be one frame behind the input
- * that used it -- which is precisely the lag head aim exists to remove.
+ * It used to be opened lazily by whichever part of the game reached the VR
+ * layer first, so that the poses would be fresh when the GAME read them rather
+ * than when the renderer did. That deadlocked on real hardware, and the reason
+ * is structural rather than a detail of any one runtime.
  *
- * Rather than guess at the host's thread and call order, whichever entry point
- * is reached first in a frame opens it: the pad read, the head-aim query, or
- * the renderer. gevr_shim_frame_end closes it.
+ * This host runs the game tick on mainThread and the display list on
+ * shedThread, and the GL context is bound on shedThread only (see
+ * gfx_sdl_make_context_current). xrBeginFrame and xrEndFrame are frame-scoped
+ * AND touch the graphics binding the session was created with -- on
+ * VirtualDesktopXR the trace goes straight into glGetError -- so opening the
+ * frame from the game thread called them with no context current, against a
+ * frame the render thread was expected to close. Two frames rendered, then
+ * mainThread blocked in xrBeginFrame while shedThread waited for a graphics
+ * task that could no longer arrive.
+ *
+ * So begin and end both run from the render thread, around gfx_run. The lag
+ * that motivated the lazy open is dealt with instead by gevr_xr_relocate_head,
+ * which the game thread calls to re-predict the head pose for the frame it is
+ * building. That call is not frame-scoped and touches no GL state, so it is
+ * safe where the frame calls are not -- and being predicted one display period
+ * ahead, it is fresher than the lazily-opened frame ever was.
  */
-static void ensure_frame_open(void)
+void gevr_shim_frame_begin(void)
 {
     gevr_frame_status st;
 
@@ -163,13 +204,30 @@ static void ensure_frame_open(void)
         return;
     }
 
-    st = gevr_xr_begin_frame(g_vr.xr, &g_vr.input);
-    g_vr.rendering = (st == GEVR_FRAME_RENDER);
-}
+    {
+        gevr_input_state staged;
 
-void gevr_shim_frame_begin(void)
-{
-    ensure_frame_open();
+        st = gevr_xr_begin_frame(g_vr.xr, &staged);
+        g_vr.input = staged;
+    }
+    g_vr.rendering = (st == GEVR_FRAME_RENDER);
+
+    if (g_vr.input.head_valid) {
+        /*
+         * Automatic origin capture happens here and only here, so one thread
+         * takes it. The game thread cannot get there first in any case:
+         * gevr_xr_relocate_head has no time base to predict against until a
+         * frame has completed its wait. (A player pressing recenter still
+         * moves the origin from the game thread, by which point this has long
+         * since stopped writing -- it is once-only.)
+         */
+        gevr_camera_capture_origin(&g_vr.cam, &g_vr.input.head);
+
+        if (!g_vr.head_live_valid) {
+            g_vr.head_live = g_vr.input.head;
+            g_vr.head_live_valid = 1;
+        }
+    }
 }
 
 void gevr_shim_frame_end(void)
@@ -183,6 +241,33 @@ void gevr_shim_frame_end(void)
     g_vr.frame_open = 0;
 }
 
+/*
+ * Bring the head pose up to date for the tick the game is running now.
+ *
+ * Called from the game thread, where the frame calls are off limits. Only the
+ * head moves: the controller state in g_vr.input stays as the render thread's
+ * xrSyncActions left it, one frame old. That asymmetry is deliberate -- a
+ * stick or button a frame late is imperceptible, a horizon a frame late is
+ * what makes a headset unpleasant, and syncing actions from two threads would
+ * race over which sync the runtime honours.
+ */
+static void refresh_head(void)
+{
+    gevr_pose head;
+
+    if (!g_vr.active) {
+        return;
+    }
+    if (!gevr_xr_relocate_head(g_vr.xr, &head)) {
+        /* No fresher pose available -- before the first frame, or tracking
+         * momentarily lost. Keep whatever the last frame established rather
+         * than invalidating it, so the view holds still instead of snapping. */
+        return;
+    }
+    g_vr.head_live = head;
+    g_vr.head_live_valid = 1;
+}
+
 int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg)
 {
     gevr_game_state game;
@@ -193,20 +278,22 @@ int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg)
         return 0;
     }
     if (g_vr.cfg.aim_mode != GEVR_AIM_HEAD) {
+        g_vr.headaim_driving = 0;
         return 0;
     }
-    ensure_frame_open();
-    if (!g_vr.input.head_valid) {
+    refresh_head();
+    if (!g_vr.head_live_valid) {
         /* Tracking lost. Leaving the angles alone freezes the view where it
          * was, which is the least alarming thing that can happen; writing a
          * stale or zeroed pose would snap the player somewhere they are not
          * looking. */
+        g_vr.headaim_driving = 0;
         return 0;
     }
 
     read_game_state(&game);
 
-    head = gevr_quat_to_euler(g_vr.input.head.orientation);
+    head = gevr_quat_to_euler(g_vr.head_live.orientation);
 
     /* The right stick turns the body. Reading the raw runtime axis rather than
      * the synthesised pads keeps head aim working even if the pad mapping is
@@ -214,10 +301,12 @@ int gevr_shim_head_aim(float *out_theta_deg, float *out_verta_deg)
      * replacing outright. */
     stick_x = g_vr.input.turn_x;
 
-    return gevr_headaim_update(&g_vr.headaim, &g_vr.headaim_p, head, stick_x,
-                               g_vr.input.dt,
-                               game.menu_open || game.controls_locked,
-                               out_theta_deg, out_verta_deg);
+    g_vr.headaim_driving =
+        gevr_headaim_update(&g_vr.headaim, &g_vr.headaim_p, head, stick_x,
+                            g_vr.input.dt,
+                            game.menu_open || game.controls_locked,
+                            out_theta_deg, out_verta_deg);
+    return g_vr.headaim_driving;
 }
 
 int gevr_shim_alternate_eyes(void)
@@ -303,6 +392,7 @@ void gevr_shim_blit_mirror(void)
 
 void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx)
 {
+    int positional;
     int e;
 
     if (!ctx) {
@@ -315,37 +405,45 @@ void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx)
         return;
     }
 
-    for (e = 0; e < GEVR_EYE_COUNT; e++) {
-        const gevr_eye_target *t = &g_vr.eye_target[e];
-        gevr_vec3 d;
+    /*
+     * Whether the 6DoF translation is safe to apply this frame.
+     *
+     * The offsets below are published in the head's frame, which is the view's
+     * frame only while head aim is steering it. See gevr_camera_eye_offset.
+     */
+    positional = g_vr.input.head_valid && g_vr.headaim_driving;
 
-        ctx->eye[e].fov[0] = t->fov[0];
-        ctx->eye[e].fov[1] = t->fov[1];
-        ctx->eye[e].fov[2] = t->fov[2];
-        ctx->eye[e].fov[3] = t->fov[3];
+    for (e = 0; e < GEVR_EYE_COUNT; e++) {
+        gevr_pose eye_pose;
+        float     fov[4];
+        gevr_vec3 off;
 
         /*
-         * Offset of the eye from the head, in game units.
-         *
-         * Only the translation is taken. The head's rotation is already in the
-         * engine's view matrix, because head aim wrote it into vv_theta and
-         * vv_verta; using the eye's full pose here would turn the world twice.
-         *
-         * ipd_scale below 1 pulls the eyes together, which flattens the stereo
-         * effect. Some players want that at N64 scale, where true separation
-         * can make the world read as a diorama.
+         * Straight from this frame's xrLocateViews rather than from the eye
+         * targets. The targets are only filled when a swapchain image is
+         * acquired, which happens partway through the walk -- reading them
+         * here would publish the PREVIOUS frame's frustum for this frame's
+         * geometry.
          */
-        d.x = t->pose.position.x - g_vr.input.head.position.x;
-        d.y = t->pose.position.y - g_vr.input.head.position.y;
-        d.z = t->pose.position.z - g_vr.input.head.position.z;
+        if (!gevr_xr_eye_view(g_vr.xr, e, &eye_pose, fov)) {
+            ctx->eye[e].valid = 0;
+            continue;
+        }
 
-        ctx->eye[e].offset.x = d.x * g_vr.cfg.world_scale * g_vr.cfg.ipd_scale;
-        ctx->eye[e].offset.y = d.y * g_vr.cfg.world_scale * g_vr.cfg.ipd_scale;
-        ctx->eye[e].offset.z = d.z * g_vr.cfg.world_scale * g_vr.cfg.ipd_scale;
+        ctx->eye[e].fov[0] = fov[0];
+        ctx->eye[e].fov[1] = fov[1];
+        ctx->eye[e].fov[2] = fov[2];
+        ctx->eye[e].fov[3] = fov[3];
+
+        off = gevr_camera_eye_offset(&g_vr.cam, &g_vr.cfg, &g_vr.input.head,
+                                     &eye_pose, positional);
+        ctx->eye[e].offset.x = off.x;
+        ctx->eye[e].offset.y = off.y;
+        ctx->eye[e].offset.z = off.z;
 
         /* A zero-width frustum means the runtime has not reported this eye
          * yet; the hook leaves the game's own projection alone in that case. */
-        ctx->eye[e].valid = (t->fov[1] > t->fov[0]) && (t->fov[2] > t->fov[3]);
+        ctx->eye[e].valid = (fov[1] > fov[0]) && (fov[2] > fov[3]);
     }
 }
 
@@ -354,12 +452,28 @@ int gevr_shim_get_pads(OSContPad *out, int max)
     gevr_game_state game;
     gevr_n64_pad pads[GEVR_PAD_COUNT];
     gevr_haptic_request haptics;
+    gevr_input_state in;
     int i;
 
     if (!g_vr.active || !out || max <= 0) {
         return 0;
     }
-    ensure_frame_open();
+    refresh_head();
+
+    /*
+     * The frame's input with the head brought up to date.
+     *
+     * A copy rather than a reference: g_vr.input belongs to the render thread,
+     * which may replace it at any point during this tick, and the control
+     * mapping should see one consistent set of readings rather than half of
+     * each. The sticks and buttons stay as the last xrSyncActions left them --
+     * see refresh_head on why only the head is chased.
+     */
+    in = g_vr.input;
+    if (g_vr.head_live_valid) {
+        in.head = g_vr.head_live;
+        in.head_valid = 1;
+    }
 
     /*
      * No player yet, nothing to drive.
@@ -389,7 +503,7 @@ int gevr_shim_get_pads(OSContPad *out, int max)
     }
 
     read_game_state(&game);
-    gevr_controls_update(&g_vr.controls, &g_vr.cfg, &g_vr.input, &game,
+    gevr_controls_update(&g_vr.controls, &g_vr.cfg, &in, &game,
                          pads, &haptics);
 
     if (g_vr.cfg.haptics_scale > 0.0f) {
@@ -398,7 +512,7 @@ int gevr_shim_get_pads(OSContPad *out, int max)
 
     if (gevr_controls_take_recenter(&g_vr.controls)) {
         gevr_xr_recenter(g_vr.xr);
-        gevr_camera_recenter(&g_vr.cam, &g_vr.input.head, g_vr.controls.body_yaw);
+        gevr_camera_recenter(&g_vr.cam, &in.head, g_vr.controls.body_yaw);
         g_vr.controls.body_yaw = 0.0f;
     }
     g_vr.cam.body_yaw = g_vr.controls.body_yaw;
@@ -413,149 +527,6 @@ int gevr_shim_get_pads(OSContPad *out, int max)
         out[i].errno = 0;
     }
     return i;
-}
-
-void gevr_shim_begin_eye(int eye)
-{
-    gevr_camera_params params;
-    unsigned fbo;
-
-    if (!g_vr.active || !g_vr.rendering ||
-        eye < 0 || eye >= GEVR_EYE_COUNT) {
-        return;
-    }
-
-    g_vr.current_eye = eye;
-
-    if (gevr_xr_acquire_eye(g_vr.xr, eye, &g_vr.eye_target[eye]) != 0) {
-        return;
-    }
-
-    memset(&params, 0, sizeof(params));
-    if (g_CurrentPlayer) {
-        /* The engine's own camera position, which is where movement and
-         * collision have put Bond this frame. */
-        params.eye_pos = gevr_v3(g_CurrentPlayer->headpos.f[0],
-                                 g_CurrentPlayer->eyeheight,
-                                 g_CurrentPlayer->headpos.f[2]);
-        params.yaw = gevr_engine_yaw_to_vr(g_CurrentPlayer->vv_theta);
-        params.pitch = gevr_engine_pitch_to_vr(g_CurrentPlayer->vv_verta);
-        params.fov_y = GEVR_DEG2RAD(g_CurrentPlayer->zoominfovy);
-    }
-
-    gevr_camera_build_eye(&g_vr.cam, &g_vr.cfg, &params, &g_vr.input.head,
-                          &g_vr.eye_target[eye].pose,
-                          g_vr.eye_target[eye].fov,
-                          &g_vr.eye_view[eye]);
-
-    fbo = gevr_gl_framebuffer_for(g_vr.eye_target[eye].gl_texture,
-                                  g_vr.eye_target[eye].gl_depth);
-    gevr_gl_bind_framebuffer(fbo, g_vr.eye_target[eye].width,
-                             g_vr.eye_target[eye].height);
-    gevr_gl_clear(0.0f, 0.0f, 0.0f, 1.0f);
-}
-
-void gevr_shim_end_eye(int eye)
-{
-    if (!g_vr.active || !g_vr.rendering ||
-        eye < 0 || eye >= GEVR_EYE_COUNT) {
-        return;
-    }
-
-    gevr_gl_draw_vignette(g_vr.controls.vignette);
-    gevr_xr_release_eye(g_vr.xr, eye);
-}
-
-int gevr_shim_eye_projection(float out_mtx[16], float *out_persp_norm)
-{
-    int eye = g_vr.current_eye;
-
-    if (!g_vr.active || !g_vr.rendering || !out_mtx) {
-        return 0;
-    }
-    if (!g_vr.eye_view[eye].valid) {
-        return 0;
-    }
-
-    memcpy(out_mtx, g_vr.eye_view[eye].proj.m, sizeof(float) * 16);
-    if (out_persp_norm) {
-        /* guPerspective's perspNorm feeds the RSP's perspective correction.
-         * The renderer backend supplies its own; 0xFFFF is the neutral value
-         * for a backend that does not use it. */
-        *out_persp_norm = 1.0f;
-    }
-    return 1;
-}
-
-int gevr_shim_eye_view(float out_mtx[16])
-{
-    int eye = g_vr.current_eye;
-
-    if (!g_vr.active || !g_vr.rendering || !out_mtx) {
-        return 0;
-    }
-    if (!g_vr.eye_view[eye].valid) {
-        return 0;
-    }
-    memcpy(out_mtx, g_vr.eye_view[eye].view.m, sizeof(float) * 16);
-    return 1;
-}
-
-/* Column-major (OpenGL) -> row-major (libultra). Element [c][r] of one is
- * element [r][c] of the other. */
-static void transpose_to_n64(const float *src_cm, float out[4][4])
-{
-    int r, c;
-
-    for (c = 0; c < 4; c++) {
-        for (r = 0; r < 4; r++) {
-            out[c][r] = src_cm[r * 4 + c];
-        }
-    }
-}
-
-int gevr_shim_eye_projection_n64(float out[4][4])
-{
-    int eye = g_vr.current_eye;
-
-    if (!g_vr.active || !g_vr.rendering || !out ||
-        !g_vr.eye_view[eye].valid) {
-        return 0;
-    }
-    transpose_to_n64(g_vr.eye_view[eye].proj.m, out);
-    return 1;
-}
-
-int gevr_shim_eye_view_n64(float out[4][4])
-{
-    int eye = g_vr.current_eye;
-
-    if (!g_vr.active || !g_vr.rendering || !out ||
-        !g_vr.eye_view[eye].valid) {
-        return 0;
-    }
-    transpose_to_n64(g_vr.eye_view[eye].view.m, out);
-    return 1;
-}
-
-void gevr_shim_room_offset(float *out_x, float *out_y, float *out_z)
-{
-    gevr_vec3 off = gevr_v3(0.0f, 0.0f, 0.0f);
-
-    if (g_vr.active && g_vr.input.head_valid) {
-        off = gevr_camera_room_offset(&g_vr.cam, &g_vr.cfg, &g_vr.input.head);
-    }
-    if (out_x) { *out_x = off.x; }
-    if (out_y) { *out_y = off.y; }
-    if (out_z) { *out_z = off.z; }
-}
-
-float gevr_shim_crouch_offset(void)
-{
-    if (!g_vr.active || !g_vr.input.head_valid) {
-        return 0.0f;
-    }
-    return gevr_camera_crouch_offset(&g_vr.cam, &g_vr.cfg, &g_vr.input.head);
 }
 
 #endif /* GE_VR */

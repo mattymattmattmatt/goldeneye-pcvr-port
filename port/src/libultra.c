@@ -1388,13 +1388,22 @@ void osSpTaskStartGo(OSTask *t)
     } else {
         /* Graphics task: run the software RSP on the display list. */
         uint64_t t0 = sysGetMicroseconds();
+        extern void vrHookFrameBegin(void);
+        extern void vrHookFrameEnd(void);
+
         videoStartFrame();
+        /*
+         * The whole OpenXR frame lives on this thread, between these two
+         * calls, because this is the thread videoStartFrame has just bound the
+         * GL context on. xrBeginFrame/xrEndFrame are frame-scoped and touch
+         * the graphics binding, so splitting them across threads deadlocks --
+         * see port/src/vrhook.c. The mirror blit is not here; it runs from the
+         * pre-swap hook, because gfx_run swaps at its own tail.
+         */
+        vrHookFrameBegin();
         gfx_run((Gfx *)t->t.data_ptr);
+        vrHookFrameEnd();
         videoEndFrame();
-        {
-            extern void vrHookFrameEnd(void);
-            vrHookFrameEnd();
-        }
         g_lastFrameUs = sysGetMicroseconds();
         if (++g_framesRendered <= 5 || (g_framesRendered % 300) == 0)
             sysLogPrintf(LOG_NOTE, "frame %d rendered in %llu us",

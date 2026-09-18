@@ -71,6 +71,17 @@ struct gevr_xr {
     int              should_render;
     XrTime           last_display_time;
 
+    /*
+     * Display time for the frame the GAME is currently building, published
+     * once xrWaitFrame has returned and never cleared mid-frame.
+     *
+     * frame_state above is memset at the top of every gevr_xr_begin_frame, so
+     * anything reading predictedDisplayTime from another thread can catch it
+     * at zero. This copy exists so gevr_xr_relocate_head -- which runs on the
+     * game thread, outside the frame -- always has a usable timestamp.
+     */
+    XrTime           input_display_time;
+
     /* ---- input ---- */
     XrActionSet      action_set;
     XrAction         a_move, a_turn;
@@ -1167,6 +1178,14 @@ gevr_frame_status gevr_xr_begin_frame(gevr_xr *xr, gevr_input_state *in)
     xr->should_render = xr->frame_state.shouldRender ? 1 : 0;
     xr->views_valid = 0;
 
+    /*
+     * The game thread builds the display list for the frame AFTER this one, so
+     * that is the moment its poses should be predicted to. Published here
+     * rather than read from frame_state directly; see input_display_time.
+     */
+    xr->input_display_time = xr->frame_state.predictedDisplayTime
+                           + xr->frame_state.predictedDisplayPeriod;
+
     if (in) {
         XrTime now = xr->frame_state.predictedDisplayTime;
         in->dt = (xr->last_display_time && now > xr->last_display_time)
@@ -1244,6 +1263,66 @@ gevr_frame_status gevr_xr_begin_frame(gevr_xr *xr, gevr_input_state *in)
         return GEVR_FRAME_SKIP;
     }
     return GEVR_FRAME_RENDER;
+}
+
+/*
+ * Re-locate the head outside the frame, for the game thread.
+ *
+ * xrLocateSpace is not frame-scoped: unlike xrWaitFrame/xrBeginFrame/xrEndFrame
+ * and the swapchain calls, it neither pairs with anything nor touches the
+ * graphics binding, so it is safe from a thread that holds no GL context and
+ * owns no frame. That is the whole reason this exists as a separate entry
+ * point -- the frame lifecycle belongs to the render thread, but head aim runs
+ * during the game tick and wants a pose newer than the one that frame started
+ * with.
+ *
+ * The pose is predicted to input_display_time: the display moment of the frame
+ * the game is building now, one period ahead of the frame being rendered. So
+ * this is not merely "as fresh as the render thread's pose" -- it is the pose
+ * for the right instant, which is what stops head aim lagging the headset.
+ *
+ * Returns 1 when *out was written.
+ */
+int gevr_xr_relocate_head(gevr_xr *xr, gevr_pose *out)
+{
+    if (!xr || !out || !xr->session_running || !xr->view_space) {
+        return 0;
+    }
+    if (xr->input_display_time <= 0) {
+        /* No frame has completed a wait yet, so there is no time base to
+         * predict against. The caller keeps the pose it already had. */
+        return 0;
+    }
+    return locate_pose(xr, xr->view_space, xr->input_display_time, out);
+}
+
+/*
+ * This frame's pose and frustum for one eye, without acquiring anything.
+ *
+ * xrLocateViews has already run in gevr_xr_begin_frame, so both are known
+ * before the first swapchain image is checked out. Reading them here lets the
+ * per-eye projection be published at the top of the frame it belongs to,
+ * rather than being scraped off the eye targets at the bottom of the previous
+ * one and applied a frame late.
+ *
+ * Returns 0 if the runtime did not give a valid view state this frame.
+ */
+int gevr_xr_eye_view(const gevr_xr *xr, int eye, gevr_pose *out_pose,
+                     float out_fov[4])
+{
+    if (!xr || eye < 0 || eye >= GEVR_EYE_COUNT || !xr->views_valid) {
+        return 0;
+    }
+    if (out_pose) {
+        *out_pose = from_xr_pose(&xr->views[eye].pose);
+    }
+    if (out_fov) {
+        out_fov[0] = xr->views[eye].fov.angleLeft;
+        out_fov[1] = xr->views[eye].fov.angleRight;
+        out_fov[2] = xr->views[eye].fov.angleUp;
+        out_fov[3] = xr->views[eye].fov.angleDown;
+    }
+    return 1;
 }
 
 int gevr_xr_acquire_eye(gevr_xr *xr, int eye, gevr_eye_target *out)

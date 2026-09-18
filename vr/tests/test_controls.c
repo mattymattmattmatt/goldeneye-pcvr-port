@@ -649,6 +649,155 @@ static void test_camera(void)
     }
 }
 
+/* ------------------------------------------------------- 6DoF / eye offset */
+
+/*
+ * The per-eye translation the renderer applies after the engine's view matrix.
+ *
+ * Everything here is stated in the HEAD's frame, because that is the frame the
+ * offset is consumed in. The property that matters is that turning your head
+ * must not move the offset: the engine's view has already turned with you.
+ */
+static void test_eye_offset(void)
+{
+    gevr_camera cam;
+    gevr_config cfg;
+    gevr_pose head, eye_l, eye_r;
+    gevr_vec3 l, r;
+
+    printf("eye offset / 6DoF\n");
+
+    gevr_config_defaults(&cfg);           /* world_scale 100, room_scale 1 */
+    gevr_camera_init(&cam, &cfg);
+
+    memset(&head, 0, sizeof(head));
+    head.orientation = gevr_quat_identity();
+    head.position = gevr_v3(0.0f, 1.6f, 0.0f);
+
+    /* No origin taken yet: positional tracking has nothing to measure from. */
+    {
+        gevr_vec3 none = gevr_camera_room_offset_local(&cam, &cfg, &head);
+        CHECK_NEAR(gevr_v3_len(none), 0.0f, 1e-6f);
+    }
+
+    gevr_camera_capture_origin(&cam, &head);
+    CHECK(cam.have_origin);
+    CHECK_NEAR(cam.standing_height, 1.6f, 1e-4f);
+
+    /* Capture is once-only: a later pose must not silently move the origin
+     * out from under the player mid-level. */
+    {
+        gevr_pose moved = head;
+        moved.position.x = 1.0f;
+        gevr_camera_capture_origin(&cam, &moved);
+        CHECK_NEAR(cam.recenter_origin.x, 0.0f, 1e-6f);
+    }
+
+    /* 32 mm each side of a head facing forward, at 100 units per metre. */
+    memset(&eye_l, 0, sizeof(eye_l));
+    memset(&eye_r, 0, sizeof(eye_r));
+    eye_l.orientation = gevr_quat_identity();
+    eye_r.orientation = gevr_quat_identity();
+    eye_l.position = gevr_v3(-0.032f, 1.6f, 0.0f);
+    eye_r.position = gevr_v3(0.032f, 1.6f, 0.0f);
+
+    l = gevr_camera_eye_offset(&cam, &cfg, &head, &eye_l, 1);
+    r = gevr_camera_eye_offset(&cam, &cfg, &head, &eye_r, 1);
+    CHECK_NEAR(l.x, -3.2f, 1e-3f);
+    CHECK_NEAR(r.x, 3.2f, 1e-3f);
+    CHECK_NEAR(r.y, 0.0f, 1e-3f);
+    CHECK_NEAR(r.z, 0.0f, 1e-3f);
+
+    /*
+     * The regression this function exists for.
+     *
+     * Turn the head ninety degrees left. The eyes turn with it in tracking
+     * space, so the raw difference now points along -z -- but in the head's own
+     * frame the separation is still straight out to the sides, and that is
+     * what the engine's already-turned view needs. Reading the tracking-space
+     * difference here is what collapsed the stereo and pushed both eyes
+     * forward instead.
+     */
+    {
+        float c = cosf((float)(GEVR_PI / 4.0));
+        float sn = sinf((float)(GEVR_PI / 4.0));
+        gevr_quat yaw90;
+        gevr_pose h2, el2, er2;
+
+        yaw90.w = c; yaw90.x = 0.0f; yaw90.y = sn; yaw90.z = 0.0f;
+
+        h2 = head;
+        h2.orientation = yaw90;
+
+        el2 = eye_l;
+        er2 = eye_r;
+        el2.position = gevr_v3_add(h2.position,
+                                   gevr_quat_rotate(yaw90, gevr_v3(-0.032f, 0.0f, 0.0f)));
+        er2.position = gevr_v3_add(h2.position,
+                                   gevr_quat_rotate(yaw90, gevr_v3(0.032f, 0.0f, 0.0f)));
+
+        l = gevr_camera_eye_offset(&cam, &cfg, &h2, &el2, 0);
+        r = gevr_camera_eye_offset(&cam, &cfg, &h2, &er2, 0);
+        CHECK_NEAR(l.x, -3.2f, 1e-3f);
+        CHECK_NEAR(r.x, 3.2f, 1e-3f);
+        CHECK_NEAR(r.z, 0.0f, 1e-3f);
+    }
+
+    /* Leaning 20 cm to the right moves the view 20 units right, on top of the
+     * eye separation. */
+    {
+        gevr_pose leaned = head;
+        gevr_pose eye = eye_r;
+
+        leaned.position.x = 0.2f;
+        eye.position.x = 0.2f + 0.032f;
+
+        r = gevr_camera_eye_offset(&cam, &cfg, &leaned, &eye, 1);
+        CHECK_NEAR(r.x, 23.2f, 1e-2f);
+
+        /* positional = 0 leaves the eye separation and drops the lean. */
+        r = gevr_camera_eye_offset(&cam, &cfg, &leaned, &eye, 0);
+        CHECK_NEAR(r.x, 3.2f, 1e-2f);
+
+        /* room_scale = 0 is 3DoF: rotation only, no translation. */
+        cfg.room_scale = 0.0f;
+        r = gevr_camera_eye_offset(&cam, &cfg, &leaned, &eye, 1);
+        CHECK_NEAR(r.x, 3.2f, 1e-2f);
+        cfg.room_scale = 1.0f;
+    }
+
+    /* Ducking lowers the view. The vertical is kept, unlike the world-space
+     * room offset, which drops it because crouch is handled separately there. */
+    {
+        gevr_pose ducked = head;
+        gevr_pose eye = eye_r;
+
+        ducked.position.y = 1.35f;
+        eye.position.y = 1.35f;
+
+        r = gevr_camera_eye_offset(&cam, &cfg, &ducked, &eye, 1);
+        CHECK_NEAR(r.y, -25.0f, 1e-2f);
+    }
+
+    /* Standing up and walking away is clamped, so the camera cannot be carried
+     * out of the level. */
+    {
+        gevr_pose walked = head;
+        gevr_vec3 off;
+
+        walked.position.x = 3.0f;
+        off = gevr_camera_room_offset_local(&cam, &cfg, &walked);
+        CHECK_NEAR(gevr_v3_len(off), cfg.room_limit, 1e-3f);
+        CHECK_NEAR(off.x, cfg.room_limit, 1e-3f);
+
+        /* The clamp is radial: a diagonal must not reach further than a
+         * straight one. */
+        walked.position.z = 3.0f;
+        off = gevr_camera_room_offset_local(&cam, &cfg, &walked);
+        CHECK_NEAR(gevr_v3_len(off), cfg.room_limit, 1e-3f);
+    }
+}
+
 /* --------------------------------------------------------------- config */
 
 static void test_config(void)
@@ -814,6 +963,7 @@ int main(void)
     test_invert_pitch_flips_output();
     test_body_yaw_composes();
     test_camera();
+    test_eye_offset();
     test_config();
     test_bind_by_name();
     test_menu_passthrough();

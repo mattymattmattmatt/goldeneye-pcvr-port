@@ -1,38 +1,49 @@
 # Quest 3 over Virtual Desktop
 
-> **Status.** The VR layer has been built and run on Linux/x86-64 only, and
-> without a headset -- it comes up, finds no runtime, reports why and runs the
-> game flat. Nothing below the "Setup" heading has been executed against real
-> hardware. Treat the first run as a bring-up, not an install.
+> **Status.** Brought up on a Quest 3 over Virtual Desktop, on Windows. The
+> runtime binds, both eyes render in stereo, and the yaw/pitch conventions and
+> `world_scale` have been checked against a live headset. Treat the rest as
+> working-but-young rather than finished.
 
 The layer is a normal PC OpenXR application. It does not know or care that the
-headset is a Quest — it talks to whatever OpenXR runtime is active, and Virtual
-Desktop presents the Quest to the PC as a SteamVR headset.
+headset is a Quest — it talks to whatever OpenXR runtime is active.
 
 ## Chain
 
+Virtual Desktop ships its own OpenXR runtime, VirtualDesktopXR, and the game
+binds to it directly:
+
 ```
-Quest 3  --wifi-->  Virtual Desktop Streamer  -->  SteamVR  -->  OpenXR  -->  ge007vr
+Quest 3  --wifi-->  Virtual Desktop Streamer  -->  VirtualDesktopXR  -->  ge007vr
 ```
+
+SteamVR also works, and adds a hop:
+
+```
+Quest 3  --wifi-->  Virtual Desktop Streamer  -->  SteamVR  -->  ge007vr
+```
+
+Prefer VirtualDesktopXR. It is one less process between the headset and the
+game, and it is what the bring-up ran on.
 
 ## Setup
 
 1. **Virtual Desktop Streamer** on the PC, Virtual Desktop on the headset.
    Connect, and confirm you can see the desktop.
-2. **SteamVR** running, and set as the active OpenXR runtime — SteamVR
-   Settings → OpenXR → *Set SteamVR as OpenXR Runtime*. This is the step that
-   is most often missed: if the Oculus runtime is active instead, the app will
-   start but may not see Virtual Desktop's headset.
+2. In the Streamer's settings, set **OpenXR Runtime** to VirtualDesktopXR.
+   (If you would rather go through SteamVR: start SteamVR and use
+   Settings → OpenXR → *Set SteamVR as OpenXR Runtime* instead. Only one
+   runtime can be active at a time, so pick one.)
 3. In Virtual Desktop on the headset, set **VR mode** rather than desktop mode.
 4. Run `ge007vr-calibrate` (built alongside the game when VR is enabled). The banner reports the runtime and system it found:
 
 ```
-runtime        : SteamVR/OpenXR
-system         : Quest 3
-per-eye target : 2064 x 2208  (render_scale 1.00)
+runtime        : VirtualDesktopXR
+system         : Meta Quest 3
+per-eye target : 2688 x 2880  (render_scale 1.00)
 ```
 
-If the runtime line does not say SteamVR, step 2 did not take.
+If the runtime line names something you did not expect, step 2 did not take.
 
 ## Controls check
 
@@ -77,7 +88,8 @@ common ones:
 
 | Message | Cause |
 |---|---|
-| runtime does not expose `XR_KHR_opengl_enable` | SteamVR is not the active OpenXR runtime, or nothing is running |
+| runtime does not expose `XR_KHR_opengl_enable` | No OpenXR runtime is active, or the active one has no OpenGL support |
+| `xrCreateInstance` failed with `XrResult(-4)` | The runtime is older than the API version asked for. The layer requests 1.0, which every runtime supports; if this appears, something is pinning it higher |
 | `xrGetSystem` failed | No headset connected; Virtual Desktop is not streaming |
 | needs an X11 window for the GLX binding | Linux on Wayland — run with `SDL_VIDEODRIVER=x11` |
 
@@ -120,16 +132,25 @@ instead of SteamVR.
 These are known-unverified rather than known-broken, and each is a small fix in
 one place:
 
-- **The view turns the wrong way, or is upside down.** The engine's yaw and
-  pitch sign conventions were inferred from the decompiled source, not measured
-  against a running game. `vr/src/gevr_engine.c` owns both:
-  `GEVR_ENGINE_PITCH_SIGN` and the negation inside `gevr_vr_yaw_to_engine`.
-  Flipping one of those is the whole fix.
+- **Stereo feels flat or overdone.** `ipd_scale`, 1.0 being true separation.
+  Below 1 pulls the eyes together and makes the world read as larger, which
+  some people prefer at N64 art scale.
+- **Leaning moves the view too much, too little, or not at all.**
+  `room_scale` (1.0 = your real lean, 0 = no positional tracking at all, i.e.
+  3DoF) and `room_limit` (metres the view may travel from where you started
+  before it stops following). The default 0.6 m covers leaning out of cover and
+  ducking from a chair without letting someone who stands up and walks away
+  carry the camera through a wall.
+- **The view turns the wrong way, or is upside down.** Checked on hardware and
+  believed right, but `vr/src/gevr_engine.c` owns both conventions if it is
+  not: `GEVR_ENGINE_PITCH_SIGN` and the negation inside
+  `gevr_vr_yaw_to_engine`. Flipping one of those is the whole fix.
 - **The world is the wrong size** -- everything feels like a doll's house, or
   like you are six inches tall. `world_scale` in `gevr.ini` is GoldenEye units
-  per real metre; ~100 is a starting point, not a measured value.
-- **Stereo feels flat or overdone.** `ipd_scale`, 1.0 being true separation.
-- **Head tracking lags.** The XR frame is opened by whichever part of the game
-  reaches the VR layer first in a frame, so that poses are fresh when the game
-  reads them rather than when the renderer does. If tracking still trails your
-  head, that placement is the thing to question.
+  per real metre. 100 measured about right on a Quest 3; it is a default, not a
+  law.
+- **Head tracking lags.** The OpenXR frame runs on the render thread, and the
+  game thread re-predicts the head pose for the frame it is building
+  (`gevr_xr_relocate_head`). If tracking trails your head, that prediction is
+  the thing to question -- not the frame placement, which is fixed by the
+  threading and cannot move.
