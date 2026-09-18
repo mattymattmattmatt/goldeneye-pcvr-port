@@ -46,15 +46,38 @@ typedef enum gevr_source {
     GEVR_SRC_MENU,
     GEVR_SRC_STICK_L,
     GEVR_SRC_STICK_R,
+    /* Both thumbsticks clicked together. A chord rather than a button because
+     * recentre must not be reachable by accident, and a stick click is very
+     * easy to hit while moving -- GEVR arrived at the same answer and ships it
+     * as the only recentre gesture. */
+    GEVR_SRC_STICK_BOTH,
     GEVR_SRC_COUNT
 } gevr_source;
 
-/* Game actions, in the order they appear in gevr.ini. */
+/*
+ * Game actions, in the order they appear in gevr.ini.
+ *
+ * USE and WEAPON were on the wrong N64 buttons until the engine was read
+ * rather than assumed. bondview2.c is unambiguous, in both the one-pad and the
+ * Goodhead branches:
+ *
+ *   A_BUTTON -> moveData.weaponBackOffset / weaponForwardOffset  (cycle weapon)
+ *   B_BUTTON -> moveData.btap -> field_D0 -> attempt_reload_item_in_hand()
+ *               and bond_interact_object()                       (reload + use)
+ *
+ * So B is one button doing both reload and interact, and A steps the weapon --
+ * the opposite of what was bound here. Both buttons "worked" the whole time,
+ * which is why this survived a hardware test: they just did each other's job.
+ * GEVR's shipped control sheet lands on the same pair independently.
+ *
+ * Buttons may go on either pad: the Goodhead branch ORs A and B across both
+ * (bondview2.c ~5026 and ~5090), so only the sticks and the two Z bits care.
+ */
 typedef enum gevr_action {
-    GEVR_ACT_FIRE = 0,   /* pad 1 Z - the trigger the fire code reads    */
-    GEVR_ACT_AIM,        /* pad 0 Z - toggles/holds insightaimmode       */
-    GEVR_ACT_USE,        /* A - doors, switches, objectives              */
-    GEVR_ACT_WEAPON,     /* B - cycle weapon (engine ORs both pads)      */
+    GEVR_ACT_FIRE = 0,   /* move pad Z - sp108/sp10C, the fire path      */
+    GEVR_ACT_AIM,        /* aim pad Z  - sp100/sp104, insightaimmode     */
+    GEVR_ACT_USE,        /* B - reload, doors, switches, objectives      */
+    GEVR_ACT_WEAPON,     /* A - cycle weapon                            */
     GEVR_ACT_PAUSE,      /* Start - watch menu                          */
     GEVR_ACT_CROUCH,     /* engine-dependent; see docs/VR/Controls.md    */
     GEVR_ACT_RECENTER,   /* VR-side only, never reaches the engine       */
@@ -106,6 +129,10 @@ float gevr_controls_desired_yaw(const gevr_controls *c,
 
 /* True once, when a recenter binding was pressed. Clears the request. */
 int  gevr_controls_take_recenter(gevr_controls *c);
+
+/* Whether a source counts as pressed this frame. Exposed so the chord sources,
+ * which are the only ones with logic of their own, can be tested directly. */
+int gevr_source_pressed_for_test(const gevr_input_state *in, gevr_source src);
 
 /* Exposed for unit tests and the calibrate tool. */
 signed char gevr_encode_stick(float v);

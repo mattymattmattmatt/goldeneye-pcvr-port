@@ -58,22 +58,53 @@ behind you in a chair. The engine keeps movement, collision and hitscan.
 
 ## The mapping
 
-| Input | Action |
-|---|---|
-| Left stick | Move — strafe and walk |
-| Right stick | Turn — snap by default |
-| Head | Look. Pitch and yaw both come from the headset |
-| Right trigger | Fire |
-| Left trigger | Aim mode |
-| A | Use / action |
-| B | Change weapon |
-| Y | Pause / watch menu |
-| Left grip | Crouch (engine-dependent, see below) |
-| X | Recentre |
+| Input | Action | N64 |
+|---|---|---|
+| Left stick | Move — strafe and walk | pad 1 stick |
+| Right stick | Turn — snap by default | (VR only) |
+| Head | Look. Pitch and yaw both come from the headset | writes `vv_theta`/`vv_verta` |
+| Right trigger | Fire | pad 1 Z |
+| Right grip | ADS / aim mode | pad 0 Z |
+| **B** | **Reload, and use doors / switches / objectives** | B |
+| **A** | **Cycle weapon** | A |
+| Menu button | Pause / watch menu | Start |
+| Left grip | Crouch (engine-dependent, see below) | R |
+| **Both sticks clicked** | Recentre | — |
 
 Rebind any of these in `gevr.ini`. An action keeps its N64 pad and button
 whatever you bind it to, because the pad split is what makes twin-stick work —
 moving `fire` to a different button still sends pad 1's Z.
+
+### A and B were the wrong way round until they were read out of the engine
+
+Worth recording, because a hardware test did not catch it and could not have:
+both buttons did something, they just did each other's job. `bondview2.c` is
+unambiguous in both the one-pad and the Goodhead branches:
+
+```c
+moveData.weaponBackOffset    = (buttons & A_BUTTON) ...     /* cycle weapon */
+moveData.weaponForwardOffset = ((buttons & ~oldbuttons) & A_BUTTON) ...
+moveData.btap                = ((buttons & ~oldbuttons) & B_BUTTON) != 0;
+```
+
+and `btap` sets `field_D0`, which `lv.c` reads to call
+`attempt_reload_item_in_hand()` and `bond_interact_object()`. So **B is one
+button doing both reload and interact, and A steps the weapon.** GEVR's shipped
+control sheet lands on the same pair, arrived at independently.
+
+`vr/tests/test_controls.c` now asserts each face button reaches only its own
+bit, so the pair cannot quietly swap again.
+
+Buttons may sit on either pad: the Goodhead branch ORs A and B across both
+(`bondview2.c` ~5026 and ~5090). Only the sticks and the two Z bits care which
+pad they arrive on.
+
+### Recentre is a chord
+
+Both thumbsticks clicked together, not a face button. A single stick click is
+very easy to brush while moving, and a stray recentre in the middle of a
+firefight is worse than having no recentre at all. GEVR ships the same gesture
+as its only recentre, which is some evidence it is the right one.
 
 ## Head control, and why there is a servo
 

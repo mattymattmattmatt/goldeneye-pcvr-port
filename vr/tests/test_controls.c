@@ -285,8 +285,9 @@ static void test_pad_routing(void)
     CHECK((pads[GEVR_PAD_MOVE].buttons & GEVR_N64_Z) != 0);
     CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_Z) == 0);
 
+    /* ADS is the right squeeze, not the left trigger. */
     base_input(&in);
-    in.trigger_l = 1.0f;
+    in.grip_r = 1.0f;
     gevr_controls_update(&c, &cfg, &in, &game, pads, NULL);
     CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_Z) != 0);
     CHECK((pads[GEVR_PAD_MOVE].buttons & GEVR_N64_Z) == 0);
@@ -299,11 +300,25 @@ static void test_pad_routing(void)
 
     /* Buttons. */
     base_input(&in);
-    in.buttons = GEVR_BTN_A_RIGHT | GEVR_BTN_B_RIGHT | GEVR_BTN_Y_LEFT;
+    in.buttons = GEVR_BTN_A_RIGHT | GEVR_BTN_B_RIGHT | GEVR_BTN_MENU;
     gevr_controls_update(&c, &cfg, &in, &game, pads, NULL);
     CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_A) != 0);
     CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_B) != 0);
     CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_START) != 0);
+
+    /* And each face button reaches only its own N64 bit: A must not reload
+     * and B must not change the weapon, which is the pair that was swapped. */
+    base_input(&in);
+    in.buttons = GEVR_BTN_A_RIGHT;
+    gevr_controls_update(&c, &cfg, &in, &game, pads, NULL);
+    CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_A) != 0);
+    CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_B) == 0);
+
+    base_input(&in);
+    in.buttons = GEVR_BTN_B_RIGHT;
+    gevr_controls_update(&c, &cfg, &in, &game, pads, NULL);
+    CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_B) != 0);
+    CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_A) == 0);
 }
 
 /* ------------------------------------------------------------ snap turn */
@@ -841,6 +856,57 @@ static void test_config(void)
     CHECK(cfg.snap_release < cfg.snap_threshold);
 }
 
+/*
+ * The N64 buttons every action lands on, asserted against the engine.
+ *
+ * USE and WEAPON were bound to each other's buttons for the whole of this
+ * project, and a hardware test did not catch it: both buttons did something,
+ * just each other's job. bondview2.c settles it -- A_BUTTON drives
+ * weaponBackOffset/weaponForwardOffset, B_BUTTON drives moveData.btap, which
+ * reaches attempt_reload_item_in_hand() and bond_interact_object(). So this
+ * test names the bits rather than trusting the next reader to re-derive them.
+ */
+static void test_default_bindings_match_the_engine(void)
+{
+    gevr_controls c;
+    gevr_input_state in;
+
+    printf("default bindings\n");
+    gevr_controls_init(&c);
+
+    /* B reloads and interacts; A cycles the weapon. Not the other way round. */
+    CHECK(c.bind[GEVR_ACT_USE].source    == GEVR_SRC_B_RIGHT);
+    CHECK(c.bind[GEVR_ACT_USE].n64_bit   == GEVR_N64_B);
+    CHECK(c.bind[GEVR_ACT_WEAPON].source == GEVR_SRC_A_RIGHT);
+    CHECK(c.bind[GEVR_ACT_WEAPON].n64_bit == GEVR_N64_A);
+
+    /* The Goodhead Z split: fire on the move pad, aim on the aim pad. */
+    CHECK(c.bind[GEVR_ACT_FIRE].pad     == GEVR_PAD_MOVE);
+    CHECK(c.bind[GEVR_ACT_FIRE].n64_bit == GEVR_N64_Z);
+    CHECK(c.bind[GEVR_ACT_AIM].pad      == GEVR_PAD_AIM);
+    CHECK(c.bind[GEVR_ACT_AIM].n64_bit  == GEVR_N64_Z);
+    CHECK(c.bind[GEVR_ACT_AIM].source   == GEVR_SRC_GRIP_R);
+
+    CHECK(c.bind[GEVR_ACT_PAUSE].n64_bit == GEVR_N64_START);
+
+    /* Recentre never reaches the engine, whatever it is bound to. */
+    CHECK(c.bind[GEVR_ACT_RECENTER].n64_bit == 0);
+
+    /* ---- the recentre chord ---- */
+    CHECK(c.bind[GEVR_ACT_RECENTER].source == GEVR_SRC_STICK_BOTH);
+
+    memset(&in, 0, sizeof(in));
+    in.buttons = GEVR_BTN_STICK_LEFT;
+    CHECK(gevr_source_pressed_for_test(&in, GEVR_SRC_STICK_BOTH) == 0);
+    in.buttons = GEVR_BTN_STICK_RIGHT;
+    CHECK(gevr_source_pressed_for_test(&in, GEVR_SRC_STICK_BOTH) == 0);
+    in.buttons = GEVR_BTN_STICK_LEFT | GEVR_BTN_STICK_RIGHT;
+    CHECK(gevr_source_pressed_for_test(&in, GEVR_SRC_STICK_BOTH) == 1);
+
+    /* And the chord is reachable by name from gevr.ini. */
+    CHECK(gevr_controls_bind_by_name(&c, "recenter", "stick_both") == 0);
+}
+
 static void test_bind_by_name(void)
 {
     gevr_controls c;
@@ -885,7 +951,7 @@ static void test_menu_passthrough(void)
 
     /* Pause must still be reachable, or the player is stuck in the menu. */
     base_input(&in);
-    in.buttons = GEVR_BTN_Y_LEFT;
+    in.buttons = GEVR_BTN_MENU;
     gevr_controls_update(&c, &cfg, &in, &game, pads, NULL);
     CHECK((pads[GEVR_PAD_AIM].buttons & GEVR_N64_START) != 0);
 }
@@ -965,6 +1031,7 @@ int main(void)
     test_camera();
     test_eye_offset();
     test_config();
+    test_default_bindings_match_the_engine();
     test_bind_by_name();
     test_menu_passthrough();
     test_engine_angles();

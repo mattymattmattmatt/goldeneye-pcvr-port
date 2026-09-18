@@ -103,6 +103,9 @@ static float source_value(const gevr_input_state *in, gevr_source src)
     case GEVR_SRC_MENU:      return (in->buttons & GEVR_BTN_MENU)        ? 1.0f : 0.0f;
     case GEVR_SRC_STICK_L:   return (in->buttons & GEVR_BTN_STICK_LEFT)  ? 1.0f : 0.0f;
     case GEVR_SRC_STICK_R:   return (in->buttons & GEVR_BTN_STICK_RIGHT) ? 1.0f : 0.0f;
+    case GEVR_SRC_STICK_BOTH:
+        return ((in->buttons & GEVR_BTN_STICK_LEFT) &&
+                (in->buttons & GEVR_BTN_STICK_RIGHT)) ? 1.0f : 0.0f;
     default:                 return 0.0f;
     }
 }
@@ -111,6 +114,11 @@ static float source_value(const gevr_input_state *in, gevr_source src)
 static int source_pressed(const gevr_input_state *in, gevr_source src)
 {
     return source_value(in, src) >= 0.6f;
+}
+
+int gevr_source_pressed_for_test(const gevr_input_state *in, gevr_source src)
+{
+    return in ? source_pressed(in, src) : 0;
 }
 
 /* --------------------------------------------------------------- binding */
@@ -126,8 +134,9 @@ static const struct { const char *name; gevr_source src; } k_source_names[] = {
     { "x",         GEVR_SRC_X_LEFT    },
     { "y",         GEVR_SRC_Y_LEFT    },
     { "menu",      GEVR_SRC_MENU      },
-    { "stick_l",   GEVR_SRC_STICK_L   },
-    { "stick_r",   GEVR_SRC_STICK_R   }
+    { "stick_l",     GEVR_SRC_STICK_L    },
+    { "stick_r",     GEVR_SRC_STICK_R    },
+    { "stick_both",  GEVR_SRC_STICK_BOTH }
 };
 
 static const struct { const char *name; gevr_action act; } k_action_names[] = {
@@ -151,19 +160,26 @@ void gevr_controls_init(gevr_controls *c)
     c->bind[GEVR_ACT_FIRE].pad        = GEVR_PAD_MOVE;
     c->bind[GEVR_ACT_FIRE].n64_bit    = GEVR_N64_Z;
 
-    c->bind[GEVR_ACT_AIM].source      = GEVR_SRC_TRIGGER_L;
+    /* ADS on the squeeze rather than the left trigger: the right hand holds
+     * the gun, and bringing it up to the eye is a grip, not a second trigger
+     * on the other hand. It also frees the left trigger entirely. */
+    c->bind[GEVR_ACT_AIM].source      = GEVR_SRC_GRIP_R;
     c->bind[GEVR_ACT_AIM].pad         = GEVR_PAD_AIM;
     c->bind[GEVR_ACT_AIM].n64_bit     = GEVR_N64_Z;
 
-    c->bind[GEVR_ACT_USE].source      = GEVR_SRC_A_RIGHT;
+    /* B, not A. See the note on gevr_action: B is reload AND interact. */
+    c->bind[GEVR_ACT_USE].source      = GEVR_SRC_B_RIGHT;
     c->bind[GEVR_ACT_USE].pad         = GEVR_PAD_AIM;
-    c->bind[GEVR_ACT_USE].n64_bit     = GEVR_N64_A;
+    c->bind[GEVR_ACT_USE].n64_bit     = GEVR_N64_B;
 
-    c->bind[GEVR_ACT_WEAPON].source   = GEVR_SRC_B_RIGHT;
+    /* A, not B. */
+    c->bind[GEVR_ACT_WEAPON].source   = GEVR_SRC_A_RIGHT;
     c->bind[GEVR_ACT_WEAPON].pad      = GEVR_PAD_AIM;
-    c->bind[GEVR_ACT_WEAPON].n64_bit  = GEVR_N64_B;
+    c->bind[GEVR_ACT_WEAPON].n64_bit  = GEVR_N64_A;
 
-    c->bind[GEVR_ACT_PAUSE].source    = GEVR_SRC_Y_LEFT;
+    /* The headset's own menu button, which is what a player reaches for, and
+     * it leaves X and Y free for the hands. */
+    c->bind[GEVR_ACT_PAUSE].source    = GEVR_SRC_MENU;
     c->bind[GEVR_ACT_PAUSE].pad       = GEVR_PAD_AIM;
     c->bind[GEVR_ACT_PAUSE].n64_bit   = GEVR_N64_START;
 
@@ -171,7 +187,9 @@ void gevr_controls_init(gevr_controls *c)
     c->bind[GEVR_ACT_CROUCH].pad      = GEVR_PAD_AIM;
     c->bind[GEVR_ACT_CROUCH].n64_bit  = GEVR_N64_R;
 
-    c->bind[GEVR_ACT_RECENTER].source = GEVR_SRC_X_LEFT;
+    /* Both sticks together. A single button here is too easy to brush while
+     * moving, and a stray recentre mid-firefight is worse than no recentre. */
+    c->bind[GEVR_ACT_RECENTER].source = GEVR_SRC_STICK_BOTH;
     c->bind[GEVR_ACT_RECENTER].pad    = GEVR_PAD_AIM;
     c->bind[GEVR_ACT_RECENTER].n64_bit = 0; /* never reaches the engine */
 }
