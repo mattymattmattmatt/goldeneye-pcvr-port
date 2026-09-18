@@ -14,6 +14,7 @@
 #include "gevr_xr.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 /* Engine headers. Only reached in the VR build, so the ROM target never sees
@@ -503,6 +504,52 @@ void gevr_shim_publish_eyes(struct gevr_stereo_ctx *ctx)
          * yet; the hook leaves the game's own projection alone in that case. */
         ctx->eye[e].valid = (fov[1] > fov[0]) && (fov[2] > fov[3]);
     }
+}
+
+/*
+ * What the runtime is handing us for the controllers, and whether it is
+ * anything at all.
+ *
+ * Returns 1 when some control is actually being used, which is the signal the
+ * log waits for: a single line the first time a stick moves or a button goes
+ * down proves the whole chain -- suggested bindings, attached action set,
+ * xrSyncActions, the profile the runtime picked -- in one shot. Without it, a
+ * controller that does nothing in game is indistinguishable from a mapping
+ * that converts it wrongly, and both look like a controller that is off.
+ */
+int gevr_shim_input_line(char *buf, int len)
+{
+    const gevr_input_state *in = &g_vr.input;
+    float mv, tn;
+
+    if (!buf || len <= 0) {
+        return 0;
+    }
+    if (!g_vr.active) {
+        snprintf(buf, (size_t)len, "inactive");
+        return 0;
+    }
+
+    snprintf(buf, (size_t)len,
+             "move=%.2f,%.2f turn=%.2f,%.2f trig=%.2f/%.2f grip=%.2f/%.2f "
+             "btn=0x%04x hands=%d%d head=%d profile=%s",
+             (double)in->move_x, (double)in->move_y,
+             (double)in->turn_x, (double)in->turn_y,
+             (double)in->trigger_l, (double)in->trigger_r,
+             (double)in->grip_l, (double)in->grip_r,
+             (unsigned)in->buttons, in->hand_l_valid, in->hand_r_valid,
+             in->head_valid,
+             gevr_xr_profile_name(g_vr.xr, 1));
+
+    mv = fabsf(in->move_x) + fabsf(in->move_y);
+    tn = fabsf(in->turn_x) + fabsf(in->turn_y);
+    return (in->buttons != 0) || (mv > 0.2f) || (tn > 0.2f) ||
+           (in->trigger_l > 0.2f) || (in->trigger_r > 0.2f);
+}
+
+const char *gevr_shim_binding_summary(void)
+{
+    return g_vr.active ? gevr_xr_binding_summary(g_vr.xr) : "inactive";
 }
 
 /*

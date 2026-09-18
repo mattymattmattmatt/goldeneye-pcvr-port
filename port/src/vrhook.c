@@ -26,6 +26,7 @@
  */
 #include "../fast3d/gfx_stereo.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "system.h"
@@ -86,7 +87,9 @@ static void stereo_end_eye(void *user, int eye)
 static void vrTraceFrame(void)
 {
     static char prev[256];
+    static char prev_profile[256];
     static int frames;
+    static int input_seen;
     char now[256];
 
     gevr_shim_debug_line(now, (int)sizeof(now));
@@ -97,6 +100,38 @@ static void vrTraceFrame(void)
     }
     if (frames < 1000) {
         frames++;
+    }
+
+    /*
+     * The controllers get two lines, once each, and then never again.
+     *
+     * They cannot go in the line above: the stick readings change every frame,
+     * so they would defeat its print-on-change filter and bury it. And they
+     * have to be said at all, because every way this chain can fail looks the
+     * same from outside -- a rejected binding list, an action set that was
+     * never attached, a runtime that picked a profile we did not suggest, and
+     * a controller that is genuinely switched off all produce a game that
+     * ignores the controller in exactly the same silence.
+     *
+     * The first is the profile the runtime settled on, whenever it changes;
+     * the second is the first moment any control is actually used, which
+     * proves the whole path in one line.
+     */
+    {
+        char line[256];
+        int active = gevr_shim_input_line(line, (int)sizeof(line));
+
+        if (strcmp(line, prev_profile) != 0) {
+            const char *p = strstr(line, "profile=");
+            if (p && strcmp(p, prev_profile) != 0) {
+                sysLogPrintf(LOG_NOTE, "VR: controller %s", p);
+                snprintf(prev_profile, sizeof(prev_profile), "%s", p);
+            }
+        }
+        if (active && !input_seen) {
+            input_seen = 1;
+            sysLogPrintf(LOG_NOTE, "VR: first controller input -- %s", line);
+        }
     }
 }
 #endif
@@ -120,6 +155,9 @@ void vrHookInit(void)
 
     sysLogPrintf(LOG_NOTE, "VR: up (%s eye rendering)",
                  g_stereo.alternate_eyes ? "alternate" : "full stereo");
+    /* One REJECTED here and that controller has no bindings at all. The call
+     * is all-or-nothing per profile, and it is otherwise silent. */
+    sysLogPrintf(LOG_NOTE, "VR: bindings %s", gevr_shim_binding_summary());
 #endif
 }
 

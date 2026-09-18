@@ -117,6 +117,18 @@ struct gevr_xr {
     XrPath           hand_path[2];
     char             profile_name[2][XR_MAX_PATH_LENGTH];
 
+    /*
+     * Which controller profiles the runtime actually accepted bindings for.
+     *
+     * xrSuggestInteractionProfileBindings is all-or-nothing: one path the
+     * profile does not define and the call rejects the entire list, leaving
+     * that controller with no bindings at all. Every action then reports
+     * inactive, every stick reads zero, and nothing anywhere says why -- the
+     * session is running, the headset is tracking, and the controllers simply
+     * do nothing. Recorded here so the log can name it in one line instead.
+     */
+    char             bind_summary[192];
+
     SDL_Window      *window;
     SDL_GLContext    gl_context;
     int              owns_window;
@@ -210,6 +222,14 @@ const char *gevr_xr_runtime_name(const gevr_xr *xr)
 const char *gevr_xr_system_name(const gevr_xr *xr)
 {
     return xr ? xr->system_name : "";
+}
+
+const char *gevr_xr_binding_summary(const gevr_xr *xr)
+{
+    if (!xr || !xr->bind_summary[0]) {
+        return "no bindings suggested";
+    }
+    return xr->bind_summary;
 }
 
 const char *gevr_xr_profile_name(const gevr_xr *xr, int hand)
@@ -737,6 +757,18 @@ static int suggest_profile(gevr_xr *xr, const char *profile,
      * SteamVR only advertises the devices actually connected. */
     r = xrSuggestInteractionProfileBindings(xr->instance, &sb);
     free(list);
+
+    {
+        /* The last path component is enough to tell the profiles apart, and
+         * keeps the summary to one readable line. */
+        const char *shortname = strrchr(profile, '/');
+        size_t used = strlen(xr->bind_summary);
+
+        shortname = shortname ? shortname + 1 : profile;
+        snprintf(xr->bind_summary + used, sizeof(xr->bind_summary) - used,
+                 "%s%s=%s", used ? " " : "", shortname,
+                 XR_SUCCEEDED(r) ? "ok" : "REJECTED");
+    }
     return XR_SUCCEEDED(r) ? 0 : -1;
 }
 

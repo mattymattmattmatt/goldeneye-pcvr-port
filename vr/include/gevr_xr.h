@@ -76,6 +76,11 @@ const char *gevr_xr_system_name(const gevr_xr *xr);
 /* Interaction profile currently bound to each hand, or "" if none. */
 const char *gevr_xr_profile_name(const gevr_xr *xr, int hand);
 
+/* One line naming each controller profile whose bindings the runtime accepted
+ * or rejected. A rejection is silent otherwise, and looks exactly like a
+ * controller that is switched off. */
+const char *gevr_xr_binding_summary(const gevr_xr *xr);
+
 /* Pumps the event queue and updates session state. Call once per frame before
  * gevr_xr_begin_frame. */
 gevr_frame_status gevr_xr_poll(gevr_xr *xr);

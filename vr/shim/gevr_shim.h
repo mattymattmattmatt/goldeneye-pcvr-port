@@ -56,6 +56,13 @@ void gevr_shim_frame_end(void);
  */
 int gevr_shim_get_pads(OSContPad *out, int max);
 
+/* Formats the raw controller readings; returns 1 when something is actually
+ * being pressed or pushed. See gevr_shim.c. */
+int gevr_shim_input_line(char *buf, int len);
+
+/* Which controller profiles the runtime accepted bindings for. */
+const char *gevr_shim_binding_summary(void);
+
 /*
  * Absolute head aim. Fills the angles the engine should hold this frame, in
  * its own units (vv_theta in degrees [0,360), vv_verta in signed degrees), and
@@ -136,6 +143,8 @@ void gevr_shim_debug_line(char *buf, int len);
 #define gevr_shim_frame_begin()     ((void)0)
 #define gevr_shim_frame_end()       ((void)0)
 #define gevr_shim_get_pads(o, n)    (0)
+#define gevr_shim_input_line(b, n)  (0)
+#define gevr_shim_binding_summary() "no VR"
 #define gevr_shim_head_aim(t, v)    (0)
 #define gevr_shim_begin_eye_target(e, w, h)  (0)
 #define gevr_shim_end_eye_target(e)    ((void)0)
