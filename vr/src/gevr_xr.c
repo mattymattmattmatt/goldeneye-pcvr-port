@@ -1469,16 +1469,16 @@ static const char *session_state_name(XrSessionState st)
  * climbs, and every clue about why the compositor has no image is inside
  * result codes and state flags that nothing printed.
  */
-void gevr_xr_debug_line(const gevr_xr *xr, char *buf, size_t len)
+void gevr_xr_debug_line(const gevr_xr *xr, char *buf, int len)
 {
-    if (!buf || len == 0) {
+    if (!buf || len <= 0) {
         return;
     }
     if (!xr) {
-        snprintf(buf, len, "no session");
+        snprintf(buf, (size_t)len, "no session");
         return;
     }
-    snprintf(buf, len,
+    snprintf(buf, (size_t)len,
              "state=%s running=%d shouldRender=%d views=%d "
              "eye=%dx%d wait=%d begin=%d acq=%d end=%d",
              session_state_name(xr->state), xr->session_running,

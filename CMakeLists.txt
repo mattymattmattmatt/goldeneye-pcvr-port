@@ -611,6 +611,54 @@ if(GE_VR)
       "${CMAKE_SOURCE_DIR}/vr/shim/gevr_shim.c"
       "${CMAKE_SOURCE_DIR}/vr/shim/gevr_stereo.c")
     target_link_libraries(ge007 gevr_runtime)
+
+    # ---- header self-containment check ------------------------------------
+    #
+    # Every public VR header, compiled alone against the GAME's include path.
+    #
+    # That path puts the decomp's include/ ahead of the toolchain's, and the
+    # decomp's <stddef.h> is a bare include guard -- no size_t, no ptrdiff_t.
+    # A header that reaches for one of those still builds on glibc, because the
+    # real definition arrives through some other transitive include, and then
+    # fails on MinGW with "unknown type name 'size_t'" pointing at a header
+    # that looks perfectly reasonable. That has now cost two round trips
+    # through someone else's machine, which is two more than it should.
+    #
+    # Compiling each header on its own, with these flags, reproduces the
+    # MinGW failure everywhere -- including on the Linux box where the VR
+    # layer is developed.
+    set(_gevr_check_srcs "")
+    file(GLOB _gevr_public_headers
+         "${CMAKE_SOURCE_DIR}/vr/include/*.h"
+         "${CMAKE_SOURCE_DIR}/vr/shim/*.h")
+    foreach(_hdr ${_gevr_public_headers})
+      get_filename_component(_hdr_name "${_hdr}" NAME_WE)
+      set(_stub "${CMAKE_BINARY_DIR}/vr_hdrcheck/check_${_hdr_name}.c")
+      # Bracket arguments so the backslash-n and the quotes around the
+      # #include reach the file intact rather than being eaten by CMake.
+      file(WRITE "${_stub}"
+           [=[/* Generated. Proves this header stands alone under the game's]=] "\n"
+           [=[ * shimmed libc; see the note in CMakeLists.txt. */]=] "\n"
+           [=[#include "]=] "${_hdr}" [=["]=] "\n"
+           "int gevr_hdrcheck_${_hdr_name};" "\n")
+      list(APPEND _gevr_check_srcs "${_stub}")
+    endforeach()
+
+    add_library(gevr_header_check OBJECT ${_gevr_check_srcs})
+    target_compile_definitions(gevr_header_check PRIVATE GE_VR)
+    target_include_directories(gevr_header_check PRIVATE
+      $<TARGET_PROPERTY:ge007,INCLUDE_DIRECTORIES>)
+    target_compile_options(gevr_header_check PRIVATE
+      $<TARGET_PROPERTY:ge007,COMPILE_OPTIONS>)
+    # This one target IS allowed to fail the build on a warning, because the
+    # warning it exists to catch is the one that turns into someone else's
+    # broken build.
+    if(NOT MSVC)
+      target_compile_options(gevr_header_check PRIVATE -Werror=implicit-int
+                             -Werror=implicit-function-declaration)
+    endif()
+    add_dependencies(ge007 gevr_header_check)
+
     message(STATUS "VR: enabled (OpenXR runtime found)")
   else()
     message(WARNING

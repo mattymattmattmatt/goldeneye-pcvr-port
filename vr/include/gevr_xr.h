@@ -9,14 +9,26 @@
  * and action set, and hands the rest of the layer two things per frame: a
  * filled gevr_input_state, and a GL texture per eye to render into.
  */
+/*
+ * Rule for this header set: no libc types in the public headers.
+ *
+ * size_t, ptrdiff_t, wchar_t and friends are all off limits. vr/shim is
+ * compiled by the GAME's target, which puts the decomp's include/ ahead of the
+ * toolchain's -- and the decomp's <stddef.h> is a bare include guard. On glibc
+ * the real definitions arrive anyway through some other transitive include and
+ * nothing is noticed; on MinGW they do not, and the build stops at "unknown
+ * type name 'size_t'" pointing at a header that looks entirely reasonable.
+ *
+ * Plain int for lengths. The header-self-containment check in the top-level
+ * CMakeLists compiles each of these headers alone against the game's include
+ * path, so a slip fails here rather than on someone else's machine.
+ */
 #ifndef GEVR_XR_H
 #define GEVR_XR_H
 
 #include "gevr_config.h"
 #include "gevr_input.h"
 #include "gevr_math.h"
-
-#include <stddef.h>   /* size_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,9 +118,16 @@ long long gevr_xr_predicted_display_time(const gevr_xr *xr);
 /* Recommended per-eye render size, after cfg->render_scale. */
 void gevr_xr_recommended_size(const gevr_xr *xr, int *w, int *h);
 
-/* One line of diagnostics: session state, whether the runtime asked for a
- * render, and the last result from each frame-scoped call. */
-void gevr_xr_debug_line(const gevr_xr *xr, char *buf, size_t len);
+/*
+ * One line of diagnostics: session state, whether the runtime asked for a
+ * render, and the last result from each frame-scoped call.
+ *
+ * `len` is an int, not a size_t, and that is not an oversight. These headers
+ * are included by translation units the GAME compiles, where <stddef.h> is the
+ * decomp's own -- essentially empty -- and size_t does not exist. See the rule
+ * at the top of this header.
+ */
+void gevr_xr_debug_line(const gevr_xr *xr, char *buf, int len);
 
 /* True once the runtime reports a stage (roomscale) space is available. */
 int  gevr_xr_has_stage_space(const gevr_xr *xr);
