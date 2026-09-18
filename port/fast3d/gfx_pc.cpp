@@ -108,6 +108,9 @@ static struct RSP {
 
     float MP_matrix[4][4];
     float P_matrix[4][4];
+    /* The projection as the game built it, before any per-eye substitution.
+     * P_matrix is derived from this; see gfx_sp_matrix. */
+    float P_matrix_game[4][4];
 
     Light_t lookat[2];
     bool lookat_enabled;
@@ -258,8 +261,24 @@ static constexpr float clampf(const float x, const float min, const float max) {
     return (x < min) ? min : (x > max) ? max : x;
 }
 
+/*
+ * What each eye pass actually drew, and how much of it got the eye's frustum.
+ *
+ * Geometry that appears in one eye and not the other, or that sits at the
+ * wrong depth, has exactly two possible causes: the pass emitted different
+ * triangles, or it emitted the same triangles through a different projection.
+ * Those need opposite fixes and look identical in a headset, so both are
+ * counted and the eye loop reports them when the two passes disagree.
+ *
+ * Silent while the eyes agree, which is the whole point -- a per-frame line
+ * would be noise, and this only exists to name a fault that is otherwise only
+ * describable as "it looked wrong".
+ */
+static uint32_t stereo_tris, stereo_proj_seen, stereo_proj_changed;
+
 static void gfx_flush(void) {
     if (buf_vbo_len > 0) {
+        stereo_tris += buf_vbo_num_tris;
         gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
         buf_vbo_len = 0;
         buf_vbo_num_tris = 0;
@@ -1298,19 +1317,39 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     memcpy(matrix, addr, sizeof(matrix));
 #endif
 
-    /* The eye's frustum goes on here, before the interpreter stores the
-     * matrix, so everything downstream -- the combined MP matrix, clipping,
-     * the vertex transform -- sees the eye's projection and not the game's.
-     * Applied on both the LOAD and MUL paths because the game uses both. */
-    if ((parameters & G_MTX_PROJECTION) && gfx_stereo && gfx_stereo->adjust_projection) {
-        gfx_stereo->adjust_projection(gfx_stereo_eye, matrix);
-    }
-
     if (parameters & G_MTX_PROJECTION) {
+        /*
+         * The game's own projection is kept separately and the eye's frustum
+         * is derived from it, rather than the hook being handed whatever
+         * gSPMatrix carried.
+         *
+         * On the MUL path that argument is an incremental factor, not a
+         * projection: giving it to a hook that recovers near and far from it
+         * and then substitutes a frustum either destroys the composition or
+         * applies the eye offset a second time on top of the LOAD that already
+         * had it. GoldenEye only ever loads projections, so nothing here was
+         * biting, but "the game uses both" was the stated reason for doing it
+         * on both paths and it was wrong.
+         *
+         * Deriving from the unmodified matrix each time also makes this
+         * idempotent, which the old arrangement was not -- the offset folds
+         * into the same row that near and far are recovered from.
+         */
         if (parameters & G_MTX_LOAD) {
-            memcpy(rsp.P_matrix, matrix, sizeof(matrix));
+            memcpy(rsp.P_matrix_game, matrix, sizeof(matrix));
         } else {
-            gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
+            gfx_matrix_mul(rsp.P_matrix_game, matrix, rsp.P_matrix_game);
+        }
+        memcpy(rsp.P_matrix, rsp.P_matrix_game, sizeof(matrix));
+
+        if (gfx_stereo && gfx_stereo->adjust_projection) {
+            float before[4][4];
+            memcpy(before, rsp.P_matrix, sizeof(before));
+            gfx_stereo->adjust_projection(gfx_stereo_eye, rsp.P_matrix);
+            stereo_proj_seen++;
+            if (memcmp(before, rsp.P_matrix, sizeof(before)) != 0) {
+                stereo_proj_changed++;
+            }
         }
     } else { // G_MTX_MODELVIEW
         if ((parameters & G_MTX_PUSH) && rsp.modelview_matrix_stack_size < 11) {
@@ -3434,6 +3473,11 @@ extern "C" void gfx_run(Gfx* commands) {
          * and restored after the loop so everything outside it -- the present
          * path below, the mirror, the overlay -- still sees the window.
          */
+        uint32_t eye_tris[2] = { 0, 0 };
+        uint32_t eye_proj[2] = { 0, 0 };
+        uint32_t eye_proj_adj[2] = { 0, 0 };
+        bool eye_drew[2] = { false, false };
+
         const struct GfxDimensions saved_dimensions = gfx_current_dimensions;
         const struct GfxDimensions saved_window = gfx_current_window_dimensions;
         const struct XYWidthHeight saved_viewport = gfx_current_game_window_viewport;
@@ -3509,6 +3553,10 @@ extern "C" void gfx_run(Gfx* commands) {
                 rendering_state.scissor = {};
             }
 
+            stereo_tris = 0;
+            stereo_proj_seen = 0;
+            stereo_proj_changed = 0;
+
             gfx_run_dl(commands);
             {
                 Gfx* overlay = optionsOverlayEmit();
@@ -3518,8 +3566,40 @@ extern "C" void gfx_run(Gfx* commands) {
             }
             gfx_flush();
 
+            if (gfx_stereo_eye >= 0 && gfx_stereo_eye < 2) {
+                eye_tris[gfx_stereo_eye] = stereo_tris;
+                eye_proj[gfx_stereo_eye] = stereo_proj_seen;
+                eye_proj_adj[gfx_stereo_eye] = stereo_proj_changed;
+                eye_drew[gfx_stereo_eye] = true;
+            }
+
             if (gfx_stereo && gfx_stereo->end_eye) {
                 gfx_stereo->end_eye(gfx_stereo_eye);
+            }
+        }
+
+        /*
+         * Report only when the two passes disagree.
+         *
+         * Same list, same interpreter, one frame apart from nothing at all --
+         * so a difference in triangles means the walk is not reproducible, and
+         * a difference in how many projections were substituted means one eye
+         * is drawing part of the scene through the game's flat frustum. Those
+         * are the two shapes of "it renders in one eye but not the other", and
+         * from inside a headset they are indistinguishable.
+         */
+        if (eye_drew[0] && eye_drew[1] &&
+            (eye_tris[0] != eye_tris[1] || eye_proj[0] != eye_proj[1] ||
+             eye_proj_adj[0] != eye_proj_adj[1])) {
+            static uint32_t last_report;
+            if (num_dls - last_report > 120) {
+                last_report = num_dls;
+                sysLogPrintf(LOG_NOTE,
+                             "VR: eyes disagree -- tris %u/%u  projections %u/%u "
+                             "substituted %u/%u",
+                             eye_tris[0], eye_tris[1],
+                             eye_proj[0], eye_proj[1],
+                             eye_proj_adj[0], eye_proj_adj[1]);
             }
         }
         gfx_stereo_eye = 0;

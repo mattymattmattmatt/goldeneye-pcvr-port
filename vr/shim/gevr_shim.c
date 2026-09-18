@@ -265,7 +265,14 @@ void gevr_shim_frame_end(void)
         return;
     }
     gevr_xr_end_frame(g_vr.xr);
-    g_vr.rendering = 0;
+    /*
+     * rendering is deliberately NOT cleared here. It is set afresh by every
+     * frame_begin, and nothing reads it after this point -- but the trace runs
+     * immediately after, so clearing it made every line in the log report
+     * rendering=0 including the frames that had just rendered both eyes
+     * perfectly. A diagnostic that lies about the thing it exists to report is
+     * worse than no diagnostic.
+     */
     g_vr.frame_open = 0;
 }
 
